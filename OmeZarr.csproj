@@ -17,6 +17,7 @@
   <ItemGroup>
     <!-- Pure managed zstd port — no native deps -->
     <PackageReference Include="AForgeBio" Version="2.5.0" />
+    <PackageReference Include="K4os.Compression.LZ4" Version="1.3.8" />
     <PackageReference Include="ZstdSharp.Port" Version="0.8.1" />
 
     <!-- System.Text.Json included via net8.0 but pin here for clarity -->

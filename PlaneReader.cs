@@ -62,6 +62,79 @@ public static class PlaneReader
 
         return new PlaneResult(result, axes);
     }
+    /// <summary>
+    /// Reads a tile using pixel coordinates.
+    /// The tile is defined by pixel-space X/Y origin and pixel dimensions.
+    /// </summary>
+    /// <param name="level">Resolution level</param>
+    /// <param name="tileOriginX">Tile origin X in pixels</param>
+    /// <param name="tileOriginY">Tile origin Y in pixels</param>
+    /// <param name="tileSizeX">Tile width in pixels</param>
+    /// <param name="tileSizeY">Tile height in pixels</param>
+    /// <param name="tIndex">Time index (default 0)</param>
+    /// <param name="cIndex">Channel index (default 0)</param>
+    /// <param name="zIndex">Z index (default 0)</param>
+    public static async Task<PlaneResult> ReadTilePixelsAsync(
+        this ResolutionLevelNode level,
+        int tileOriginX,
+        int tileOriginY,
+        int tileSizeX,
+        int tileSizeY,
+        int tIndex = 0,
+        int cIndex = 0,
+        int zIndex = 0,
+        CancellationToken ct = default)
+    {
+        var axes = level.Multiscale.Axes;
+        var pixelSize = level.GetPixelSize();
+        var extent = level.GetPhysicalExtent();
+
+        var origin = new double[axes.Length];
+        var size = new double[axes.Length];
+
+        for (int i = 0; i < axes.Length; i++)
+        {
+            var axisName = axes[i].Name.ToLowerInvariant();
+
+            switch (axisName)
+            {
+                case "t":
+                    origin[i] = tIndex * pixelSize[i];
+                    size[i] = pixelSize[i];
+                    break;
+
+                case "c":
+                    origin[i] = cIndex * pixelSize[i];
+                    size[i] = pixelSize[i];
+                    break;
+
+                case "z":
+                    origin[i] = zIndex * pixelSize[i];
+                    size[i] = pixelSize[i];
+                    break;
+
+                case "y":
+                    origin[i] = tileOriginY * pixelSize[i];
+                    size[i] = tileSizeY * pixelSize[i];
+                    break;
+
+                case "x":
+                    origin[i] = tileOriginX * pixelSize[i];
+                    size[i] = tileSizeX * pixelSize[i];
+                    break;
+
+                default:
+                    origin[i] = 0;
+                    size[i] = extent.Size[i];
+                    break;
+            }
+        }
+
+        var roi = new PhysicalROI(origin, size);
+        var result = await level.ReadRegionAsync(roi, ct).ConfigureAwait(false);
+
+        return new PlaneResult(result, axes);
+    }
 
     /// <summary>
     /// Reads a 2D plane using physical coordinates (in microns, seconds, etc.).
