@@ -1,0 +1,255 @@
+using System.Net;
+
+namespace OmeZarr.Core.Zarr.Store;
+
+/// <summary>
+/// IZarrStore implementation for reading Zarr datasets over HTTP/HTTPS.
+/// Supports public S3 buckets, Azure Blob Storage, Google Cloud Storage,
+/// and any HTTP server serving Zarr files.
+///
+/// Note: Listing is limited - requires consolidated metadata (.zmetadata)
+/// or works only with explicit path navigation.
+/// </summary>
+public sealed class HttpZarrStore : IZarrStore
+{
+    private readonly HttpClient _httpClient;
+    private readonly string _baseUrl;
+    private readonly bool _ownsHttpClient;
+    private bool _disposed;
+
+    // Cache for frequently accessed metadata files
+    private readonly Dictionary<string, byte[]?> _metadataCache = new();
+    private readonly SemaphoreSlim _cacheLock = new(1, 1);
+
+    public string BaseUrl => _baseUrl;
+
+    /// <summary>
+    /// Creates an HTTP Zarr store with a new HttpClient.
+    /// The HttpClient will be disposed when the store is disposed.
+    /// </summary>
+    public HttpZarrStore(string baseUrl)
+        : this(baseUrl, new HttpClient(), ownsHttpClient: true)
+    {
+    }
+
+    /// <summary>
+    /// Creates an HTTP Zarr store with a provided HttpClient.
+    /// The caller is responsible for disposing the HttpClient.
+    /// </summary>
+    public HttpZarrStore(string baseUrl, HttpClient httpClient, bool ownsHttpClient = false)
+    {
+        _baseUrl = baseUrl.TrimEnd('/');
+        _httpClient = httpClient;
+        _ownsHttpClient = ownsHttpClient;
+
+        // Set reasonable defaults if not already configured
+        if (_httpClient.Timeout == TimeSpan.FromSeconds(100))  // Default HttpClient timeout
+            _httpClient.Timeout = TimeSpan.FromSeconds(300);  // 5 minutes for large chunks
+    }
+
+    // -------------------------------------------------------------------------
+    // IZarrStore
+    // -------------------------------------------------------------------------
+
+    public async Task<byte[]?> ReadAsync(string key, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+
+        // Check cache for metadata files
+        if (IsMetadataKey(key))
+        {
+            await _cacheLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                if (_metadataCache.TryGetValue(key, out var cached))
+                    return cached;
+            }
+            finally
+            {
+                _cacheLock.Release();
+            }
+        }
+
+        var url = BuildUrl(key);
+
+        try
+        {
+            var response = await _httpClient.GetAsync(url, ct).ConfigureAwait(false);
+
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                // Cache negative result for metadata
+                if (IsMetadataKey(key))
+                    await CacheMetadataAsync(key, null, ct).ConfigureAwait(false);
+
+                return null;
+            }
+
+            response.EnsureSuccessStatusCode();
+
+            var data = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+
+            // Cache metadata files
+            if (IsMetadataKey(key))
+                await CacheMetadataAsync(key, data, ct).ConfigureAwait(false);
+
+            return data;
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        catch (TaskCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            throw new TimeoutException(
+                $"HTTP request timed out while reading key '{key}' from {_baseUrl}", ex);
+        }
+    }
+
+    public async Task WriteAsync(string key, byte[] data, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+
+        // HTTP stores are typically read-only
+        // For write support, would need PUT/POST with authentication
+        throw new NotSupportedException(
+            "Writing to HTTP Zarr stores is not supported. " +
+            "HTTP stores are read-only. Use LocalFileSystemStore for write operations.");
+    }
+
+    public async Task<bool> ExistsAsync(string key, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+
+        // Check cache first
+        if (IsMetadataKey(key))
+        {
+            await _cacheLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                if (_metadataCache.ContainsKey(key))
+                    return _metadataCache[key] is not null;
+            }
+            finally
+            {
+                _cacheLock.Release();
+            }
+        }
+
+        var url = BuildUrl(key);
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Head, url);
+            var response = await _httpClient.SendAsync(request, ct).ConfigureAwait(false);
+
+            return response.IsSuccessStatusCode;
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+        catch (TaskCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            throw new TimeoutException(
+                $"HTTP request timed out while checking existence of '{key}' at {_baseUrl}", ex);
+        }
+    }
+
+    public async Task<IReadOnlyList<string>> ListAsync(string prefix = "", CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+
+        // HTTP stores don't have a standard way to list keys
+        // We'd need either:
+        // 1. Consolidated metadata (.zmetadata file - Zarr v2)
+        // 2. Directory index (not standardized)
+        // 3. S3 ListObjects API (requires AWS SDK)
+
+        // For now, return empty list - navigation works via explicit paths
+        // Users should use HasChildAsync and explicit path navigation
+
+        throw new NotSupportedException(
+            "Listing keys in HTTP Zarr stores is not supported. " +
+            "HTTP/S3 stores require explicit path navigation. " +
+            "Use HasChildAsync() to check for specific children, or enable consolidated metadata.");
+    }
+
+    public Task DeleteAsync(string key, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+
+        throw new NotSupportedException(
+            "Deleting from HTTP Zarr stores is not supported. " +
+            "HTTP stores are read-only.");
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    private string BuildUrl(string key)
+    {
+        // URL-encode the key components to handle special characters
+        var parts = key.Split('/');
+        var encodedParts = parts.Select(Uri.EscapeDataString);
+        var encodedKey = string.Join("/", encodedParts);
+
+        return $"{_baseUrl}/{encodedKey}";
+    }
+
+    private static bool IsMetadataKey(string key)
+    {
+        return key.EndsWith("zarr.json", StringComparison.OrdinalIgnoreCase)
+            || key.EndsWith(".zarray", StringComparison.OrdinalIgnoreCase)
+            || key.EndsWith(".zgroup", StringComparison.OrdinalIgnoreCase)
+            || key.EndsWith(".zattrs", StringComparison.OrdinalIgnoreCase)
+            || key.EndsWith(".zmetadata", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task CacheMetadataAsync(string key, byte[]? data, CancellationToken ct)
+    {
+        await _cacheLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            _metadataCache[key] = data;
+        }
+        finally
+        {
+            _cacheLock.Release();
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Disposal
+    // -------------------------------------------------------------------------
+
+    public ValueTask DisposeAsync()
+    {
+        if (_disposed)
+            return ValueTask.CompletedTask;
+
+        _disposed = true;
+
+        if (_ownsHttpClient)
+            _httpClient?.Dispose();
+
+        _cacheLock?.Dispose();
+
+        return ValueTask.CompletedTask;
+    }
+
+    private void ThrowIfDisposed()
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(HttpZarrStore));
+    }
+}
