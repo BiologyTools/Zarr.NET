@@ -29,7 +29,7 @@ public static class PlaneReader
         int? z = 0,
         CancellationToken ct = default)
     {
-        var axes = level.Multiscale.Axes;
+        var axes = level.EffectiveAxes;
         var shape = level.Shape;
 
         // Build pixel region for the requested plane
@@ -85,7 +85,7 @@ public static class PlaneReader
         int zIndex = 0,
         CancellationToken ct = default)
     {
-        var axes = level.Multiscale.Axes;
+        var axes = level.EffectiveAxes;
         var pixelSize = level.GetPixelSize();
         var extent = level.GetPhysicalExtent();
 
@@ -160,7 +160,7 @@ public static class PlaneReader
         double? spatialSizeX = null,
         CancellationToken ct = default)
     {
-        var axes = level.Multiscale.Axes;
+        var axes = level.EffectiveAxes;
         var pixelSize = level.GetPixelSize();
         var extent = level.GetPhysicalExtent();
 

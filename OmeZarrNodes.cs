@@ -125,6 +125,36 @@ public sealed class ResolutionLevelNode
     public string  Path      => _array.Metadata.DataType.TypeString;
     public int     Rank      => _array.Metadata.Rank;
 
+    private AxisMetadata[]? _effectiveAxes;
+
+    /// <summary>
+    /// Returns the axes for this resolution level. When the multiscale metadata
+    /// does not declare axes (OME-Zarr spec v0.1/v0.2), standard axis names are
+    /// inferred from the array rank using the conventional suffix of (t, c, z, y, x).
+    /// This ensures callers never receive an empty axes array against a ranked array.
+    /// </summary>
+    public AxisMetadata[] EffectiveAxes
+    {
+        get
+        {
+            if (_effectiveAxes is not null)
+                return _effectiveAxes;
+
+            if (Multiscale.Axes.Length > 0)
+                return _effectiveAxes = Multiscale.Axes;
+
+            // OME-Zarr v0.1/v0.2 files carry no explicit axes field.
+            // The conventional axis order is the suffix of (t, c, z, y, x).
+            var standardNames = new[] { "t", "c", "z", "y", "x" };
+            var rank          = Rank;
+            var offset        = standardNames.Length - rank;
+
+            return _effectiveAxes = Enumerable.Range(0, rank)
+                .Select(i => new AxisMetadata { Name = standardNames[offset + i] })
+                .ToArray();
+        }
+    }
+
     internal ResolutionLevelNode(
         ZarrArray          array,
         DatasetMetadata    dataset,
@@ -159,7 +189,7 @@ public sealed class ResolutionLevelNode
             data,
             pixelRegion.Shape.Select(s => (long)s).ToArray(),
             _array.Metadata.DataType.TypeString,
-            Multiscale.Axes);
+            EffectiveAxes);
     }
 
     /// <summary>
@@ -178,7 +208,7 @@ public sealed class ResolutionLevelNode
             data,
             region.Shape.Select(s => (long)s).ToArray(),
             _array.Metadata.DataType.TypeString,
-            Multiscale.Axes);
+            EffectiveAxes);
     }
 
     /// <summary>

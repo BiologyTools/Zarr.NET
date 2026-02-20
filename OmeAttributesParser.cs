@@ -15,7 +15,8 @@ public static class OmeAttributesParser
         PropertyNameCaseInsensitive = true,
         ReadCommentHandling         = JsonCommentHandling.Skip,
         AllowTrailingCommas         = true,
-        NumberHandling              = JsonNumberHandling.AllowReadingFromString
+        NumberHandling              = JsonNumberHandling.AllowReadingFromString,
+        Converters                  = { new AxisMetadataJsonConverter() }
     };
 
     // -------------------------------------------------------------------------
@@ -197,6 +198,62 @@ public static class OmeAttributesParser
         [JsonPropertyName("name")] public string? Name { get; init; }
         [JsonPropertyName("type")] public string? Type { get; init; }
         [JsonPropertyName("unit")] public string? Unit { get; init; }
+    }
+
+    /// <summary>
+    /// Handles both OME-Zarr axis representations:
+    ///   v0.1/v0.2 — axes as a plain string array:  ["t", "c", "z", "y", "x"]
+    ///   v0.3+     — axes as an object array:        [{"name":"t","type":"time"}, ...]
+    /// When a string token is encountered the name is taken from the string value
+    /// directly; type and unit are left null and inferred later by EffectiveAxes.
+    /// </summary>
+    private sealed class AxisMetadataJsonConverter : JsonConverter<AxisMetadataJson>
+    {
+        public override AxisMetadataJson Read(
+            ref Utf8JsonReader   reader,
+            Type                 typeToConvert,
+            JsonSerializerOptions options)
+        {
+            if (reader.TokenType == JsonTokenType.String)
+                return new AxisMetadataJson { Name = reader.GetString() };
+
+            if (reader.TokenType != JsonTokenType.StartObject)
+                throw new JsonException(
+                    $"Unexpected token {reader.TokenType} reading AxisMetadataJson.");
+
+            string? name = null, type = null, unit = null;
+
+            while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+            {
+                if (reader.TokenType != JsonTokenType.PropertyName)
+                    continue;
+
+                var propertyName = reader.GetString()!.ToLowerInvariant();
+                reader.Read();
+
+                switch (propertyName)
+                {
+                    case "name": name = reader.GetString(); break;
+                    case "type": type = reader.GetString(); break;
+                    case "unit": unit = reader.GetString(); break;
+                    default:     reader.Skip();             break;
+                }
+            }
+
+            return new AxisMetadataJson { Name = name, Type = type, Unit = unit };
+        }
+
+        public override void Write(
+            Utf8JsonWriter        writer,
+            AxisMetadataJson      value,
+            JsonSerializerOptions options)
+        {
+            writer.WriteStartObject();
+            if (value.Name is not null) writer.WriteString("name", value.Name);
+            if (value.Type is not null) writer.WriteString("type", value.Type);
+            if (value.Unit is not null) writer.WriteString("unit", value.Unit);
+            writer.WriteEndObject();
+        }
     }
 
     private sealed class DatasetMetadataJson
