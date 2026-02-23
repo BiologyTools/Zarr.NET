@@ -63,34 +63,32 @@ public static class PlaneReader
         return new PlaneResult(result, axes);
     }
     /// <summary>
-    /// Reads a tile using pixel coordinates.
-    /// The tile is defined by pixel-space X/Y origin and pixel dimensions.
+    /// Reads a tile from a multidimensional image using pixel coordinates.
     /// </summary>
     /// <param name="level">Resolution level</param>
     /// <param name="tileOriginX">Tile origin X in pixels</param>
     /// <param name="tileOriginY">Tile origin Y in pixels</param>
     /// <param name="tileSizeX">Tile width in pixels</param>
     /// <param name="tileSizeY">Tile height in pixels</param>
-    /// <param name="tIndex">Time index (default 0)</param>
-    /// <param name="cIndex">Channel index (default 0)</param>
-    /// <param name="zIndex">Z index (default 0)</param>
-    public static async Task<PlaneResult> ReadTilePixelsAsync(
+    /// <param name="t">Time index (null = all)</param>
+    /// <param name="c">Channel index (null = all)</param>
+    /// <param name="z">Z index (null = all)</param>
+    public static async Task<PlaneResult> ReadTileAsync(
         this ResolutionLevelNode level,
         int tileOriginX,
         int tileOriginY,
         int tileSizeX,
         int tileSizeY,
-        int tIndex = 0,
-        int cIndex = 0,
-        int zIndex = 0,
+        int? z = 0,
+        int? c = 0,
+        int? t = 0,
         CancellationToken ct = default)
     {
         var axes = level.EffectiveAxes;
-        var pixelSize = level.GetPixelSize();
-        var extent = level.GetPhysicalExtent();
+        var shape = level.Shape;
 
-        var origin = new double[axes.Length];
-        var size = new double[axes.Length];
+        var start = new long[axes.Length];
+        var end = new long[axes.Length];
 
         for (int i = 0; i < axes.Length; i++)
         {
@@ -99,41 +97,81 @@ public static class PlaneReader
             switch (axisName)
             {
                 case "t":
-                    origin[i] = tIndex * pixelSize[i];
-                    size[i] = pixelSize[i];
+                    start[i] = t ?? 0;
+                    end[i] = t.HasValue ? t.Value + 1 : shape[i];
                     break;
 
                 case "c":
-                    origin[i] = cIndex * pixelSize[i];
-                    size[i] = pixelSize[i];
+                    start[i] = c ?? 0;
+                    end[i] = c.HasValue ? c.Value + 1 : shape[i];
                     break;
 
                 case "z":
-                    origin[i] = zIndex * pixelSize[i];
-                    size[i] = pixelSize[i];
+                    start[i] = z ?? 0;
+                    end[i] = z.HasValue ? z.Value + 1 : shape[i];
                     break;
 
                 case "y":
-                    origin[i] = tileOriginY * pixelSize[i];
-                    size[i] = tileSizeY * pixelSize[i];
+                    start[i] = Math.Max(0, tileOriginY);
+                    end[i] = Math.Min(shape[i], tileOriginY + tileSizeY);
                     break;
 
                 case "x":
-                    origin[i] = tileOriginX * pixelSize[i];
-                    size[i] = tileSizeX * pixelSize[i];
+                    start[i] = Math.Max(0, tileOriginX);
+                    end[i] = Math.Min(shape[i], tileOriginX + tileSizeX);
                     break;
 
                 default:
-                    origin[i] = 0;
-                    size[i] = extent.Size[i];
+                    // unknown axes → read full range
+                    start[i] = 0;
+                    end[i] = shape[i];
                     break;
             }
         }
 
-        var roi = new PhysicalROI(origin, size);
-        var result = await level.ReadRegionAsync(roi, ct).ConfigureAwait(false);
+        var region = new PixelRegion(start, end);
+
+        var result = await level
+            .ReadPixelRegionAsync(region, ct)
+            .ConfigureAwait(false);
 
         return new PlaneResult(result, axes);
+    }
+
+    public static Dictionary<string, double> GetAxisPixelSizes(
+    this ResolutionLevelNode level)
+    {
+        var dict = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+
+        var axes = level.EffectiveAxes;
+        var pixelSizes = level.GetPixelSize();
+
+        int spatialIndex = 0;
+
+        foreach (var axis in axes)
+        {
+            var name = axis.Name.ToLowerInvariant();
+
+            if (name == "x" || name == "y" || name == "z")
+            {
+                if (spatialIndex < pixelSizes.Length)
+                {
+                    dict[name] = pixelSizes[spatialIndex++];
+                }
+                else
+                {
+                    // fallback if metadata is inconsistent
+                    dict[name] = 1.0;
+                }
+            }
+            else
+            {
+                // non-spatial axes (t, c, etc.)
+                dict[name] = 1.0;
+            }
+        }
+
+        return dict;
     }
 
     /// <summary>
