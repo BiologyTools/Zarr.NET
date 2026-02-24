@@ -13,18 +13,18 @@ namespace OmeZarr.Core.Zarr;
 /// </summary>
 public sealed class ZarrArray
 {
-    private readonly IZarrStore   _store;
-    private readonly string       _arrayPath;   // store-relative path to the array root
+    private readonly IZarrStore _store;
+    private readonly string _arrayPath;   // store-relative path to the array root
     private readonly CodecPipeline _pipeline;
 
     public ZarrArrayMetadata Metadata { get; }
 
     internal ZarrArray(IZarrStore store, string arrayPath, ZarrArrayMetadata metadata)
     {
-        _store      = store;
-        _arrayPath  = arrayPath.TrimEnd('/');
-        Metadata    = metadata;
-        _pipeline   = CodecFactory.BuildPipeline(metadata);
+        _store = store;
+        _arrayPath = arrayPath.TrimEnd('/');
+        Metadata = metadata;
+        _pipeline = CodecFactory.BuildPipeline(metadata);
     }
 
     // -------------------------------------------------------------------------
@@ -43,10 +43,10 @@ public sealed class ZarrArray
     {
         ValidateRegion(regionStart, regionEnd);
 
-        var regionShape   = ComputeRegionShape(regionStart, regionEnd);
-        var elementSize   = Metadata.DataType.ElementSize;
+        var regionShape = ComputeRegionShape(regionStart, regionEnd);
+        var elementSize = Metadata.DataType.ElementSize;
         var totalElements = ComputeTotalElements(regionShape);
-        var outputBuffer  = new byte[totalElements * elementSize];
+        var outputBuffer = new byte[totalElements * elementSize];
 
         var chunkCoords = EnumerateChunkCoordinates(regionStart, regionEnd);
 
@@ -82,8 +82,8 @@ public sealed class ZarrArray
     {
         ValidateRegion(regionStart, regionEnd);
 
-        var regionShape   = ComputeRegionShape(regionStart, regionEnd);
-        var elementSize   = Metadata.DataType.ElementSize;
+        var regionShape = ComputeRegionShape(regionStart, regionEnd);
+        var elementSize = Metadata.DataType.ElementSize;
         var expectedBytes = ComputeTotalElements(regionShape) * elementSize;
 
         if (data.Length != expectedBytes)
@@ -113,7 +113,7 @@ public sealed class ZarrArray
 
     private async Task<byte[]> ReadChunkAsync(long[] chunkCoord, CancellationToken ct)
     {
-        var key   = BuildChunkKey(chunkCoord);
+        var key = BuildChunkKey(chunkCoord);
         var bytes = await _store.ReadAsync(key, ct).ConfigureAwait(false);
 
         if (bytes is null)
@@ -126,16 +126,33 @@ public sealed class ZarrArray
 
         // Validate decoded size - must match expected chunk size
         var expectedElements = Metadata.ChunkShape.Aggregate(1L, (acc, s) => acc * s);
-        var expectedBytes    = expectedElements * Metadata.DataType.ElementSize;
-        var actualBytes      = decoded.Length;
+        var expectedBytes = expectedElements * Metadata.DataType.ElementSize;
+        var actualBytes = decoded.Length;
 
         if (actualBytes != expectedBytes)
         {
-            // Edge chunks in v2 can be smaller - pad with fill value
+            // Truncated edge chunks: some Zarr implementations write only the valid portion
+            // of edge chunks (no fill-value padding). We must expand them into the full chunk
+            // shape so CopyChunkRegionToOutput can use a consistent stride.
+            //
+            // A flat Array.Copy to offset 0 is only correct when the innermost dimension
+            // is also full width — if ANY dimension is clipped, the decoded rows are narrower
+            // than the nominal chunkShape, and a flat copy produces wrong strides for all
+            // rows after the first, causing black bands at image edges.
             if (actualBytes < expectedBytes)
             {
+                int elementSize = Metadata.DataType.ElementSize;
                 var padded = BuildFillValueChunk();
-                Array.Copy(decoded, 0, padded, 0, decoded.Length);
+                var fullChunkShape = Metadata.ChunkShape.Select(s => (long)s).ToArray();
+                var truncatedShape = ComputeTruncatedChunkShape(chunkCoord);
+
+                var expectedTruncatedBytes = ComputeTotalElements(truncatedShape) * elementSize;
+
+                if (actualBytes == (int)expectedTruncatedBytes)
+                    ExpandTruncatedChunk(decoded, truncatedShape, padded, fullChunkShape, elementSize);
+                else
+                    Array.Copy(decoded, 0, padded, 0, decoded.Length);  // unknown truncation — best effort
+
                 return padded;
             }
 
@@ -162,25 +179,25 @@ public sealed class ZarrArray
     private async Task WriteChunkAsync(long[] chunkCoord, byte[] decodedData, CancellationToken ct)
     {
         var encoded = await _pipeline.EncodeAsync(decodedData, ct).ConfigureAwait(false);
-        var key     = BuildChunkKey(chunkCoord);
+        var key = BuildChunkKey(chunkCoord);
 
         await _store.WriteAsync(key, encoded, ct).ConfigureAwait(false);
     }
 
     private async Task WriteChunkRegionAsync(
-        long[]        chunkCoord,
-        long[]        regionStart,
-        long[]        regionEnd,
-        long[]        regionShape,
-        byte[]        sourceData,
-        int           elementSize,
+        long[] chunkCoord,
+        long[] regionStart,
+        long[] regionEnd,
+        long[] regionShape,
+        byte[] sourceData,
+        int elementSize,
         CancellationToken ct)
     {
-        var chunkData        = await ReadChunkAsync(chunkCoord, ct).ConfigureAwait(false);
-        var chunkOrigin      = ComputeChunkOrigin(chunkCoord);
-        var chunkShape       = Metadata.ChunkShape.Select(s => (long)s).ToArray();
-        var clampedStart     = ClampToChunk(regionStart, chunkOrigin, chunkShape, clampToStart: true);
-        var clampedEnd       = ClampToChunk(regionEnd,   chunkOrigin, chunkShape, clampToStart: false);
+        var chunkData = await ReadChunkAsync(chunkCoord, ct).ConfigureAwait(false);
+        var chunkOrigin = ComputeChunkOrigin(chunkCoord);
+        var chunkShape = Metadata.ChunkShape.Select(s => (long)s).ToArray();
+        var clampedStart = ClampToChunk(regionStart, chunkOrigin, chunkShape, clampToStart: true);
+        var clampedEnd = ClampToChunk(regionEnd, chunkOrigin, chunkShape, clampToStart: false);
 
         CopySourceRegionToChunk(
             chunkOrigin,
@@ -205,35 +222,35 @@ public sealed class ZarrArray
     /// at the correct offset for the requested region.
     /// </summary>
     private void CopyChunkRegionToOutput(
-        long[]  chunkCoord,
-        byte[]  chunkData,
-        long[]  regionStart,
-        long[]  regionEnd,
-        long[]  regionShape,
-        byte[]  outputBuffer,
-        int     elementSize)
+        long[] chunkCoord,
+        byte[] chunkData,
+        long[] regionStart,
+        long[] regionEnd,
+        long[] regionShape,
+        byte[] outputBuffer,
+        int elementSize)
     {
-        var rank        = Metadata.Rank;
+        var rank = Metadata.Rank;
         var chunkOrigin = ComputeChunkOrigin(chunkCoord);
-        var chunkShape  = Metadata.ChunkShape.Select(s => (long)s).ToArray();
+        var chunkShape = Metadata.ChunkShape.Select(s => (long)s).ToArray();
 
         // The range within the array that this chunk covers, clipped to our region
         var copyStart = new long[rank];
-        var copyEnd   = new long[rank];
+        var copyEnd = new long[rank];
 
         for (int d = 0; d < rank; d++)
         {
             copyStart[d] = Math.Max(regionStart[d], chunkOrigin[d]);
-            copyEnd[d]   = Math.Min(regionEnd[d],   chunkOrigin[d] + chunkShape[d]);
+            copyEnd[d] = Math.Min(regionEnd[d], chunkOrigin[d] + chunkShape[d]);
         }
 
         // Iterate over all elements in the copy range
         IterateNdRegion(copyStart, copyEnd, rank, indices =>
         {
-            var chunkOffset  = ComputeFlatIndex(SubtractArrays(indices, chunkOrigin),  chunkShape);
+            var chunkOffset = ComputeFlatIndex(SubtractArrays(indices, chunkOrigin), chunkShape);
             var outputOffset = ComputeFlatIndex(SubtractArrays(indices, regionStart), regionShape);
 
-            var chunkByteOffset  = (int)(chunkOffset  * elementSize);
+            var chunkByteOffset = (int)(chunkOffset * elementSize);
             var outputByteOffset = (int)(outputOffset * elementSize);
 
             // Bounds check before copy
@@ -256,7 +273,7 @@ public sealed class ZarrArray
             }
 
             Buffer.BlockCopy(
-                chunkData,    chunkByteOffset,
+                chunkData, chunkByteOffset,
                 outputBuffer, outputByteOffset,
                 elementSize);
         });
@@ -271,18 +288,18 @@ public sealed class ZarrArray
         long[] regionShape,
         byte[] sourceData,
         byte[] chunkData,
-        int    elementSize)
+        int elementSize)
     {
         var rank = Metadata.Rank;
 
         IterateNdRegion(clampedStart, clampedEnd, rank, indices =>
         {
-            var chunkOffset  = ComputeFlatIndex(SubtractArrays(indices, chunkOrigin),  chunkShape);
+            var chunkOffset = ComputeFlatIndex(SubtractArrays(indices, chunkOrigin), chunkShape);
             var sourceOffset = ComputeFlatIndex(SubtractArrays(indices, regionStart), regionShape);
 
             Buffer.BlockCopy(
                 sourceData, (int)(sourceOffset * elementSize),
-                chunkData,  (int)(chunkOffset  * elementSize),
+                chunkData, (int)(chunkOffset * elementSize),
                 elementSize);
         });
     }
@@ -293,7 +310,7 @@ public sealed class ZarrArray
 
     private IEnumerable<long[]> EnumerateChunkCoordinates(long[] regionStart, long[] regionEnd)
     {
-        var rank       = Metadata.Rank;
+        var rank = Metadata.Rank;
         var chunkShape = Metadata.ChunkShape;
 
         var firstChunk = new long[rank];
@@ -302,7 +319,7 @@ public sealed class ZarrArray
         for (int d = 0; d < rank; d++)
         {
             firstChunk[d] = regionStart[d] / chunkShape[d];
-            
+
             // Last chunk that intersects the region, then +1 for exclusive end
             lastChunkExclusive[d] = ((regionEnd[d] - 1) / chunkShape[d]) + 1;
         }
@@ -312,7 +329,7 @@ public sealed class ZarrArray
 
     private string BuildChunkKey(long[] chunkCoord)
     {
-        var sep   = Metadata.ChunkKeySeparator;
+        var sep = Metadata.ChunkKeySeparator;
         var coord = string.Join(sep, chunkCoord);
 
         // Zarr v2: chunks directly under array path
@@ -356,11 +373,56 @@ public sealed class ZarrArray
         return origin;
     }
 
+    /// <summary>
+    /// Returns the actual element count per dimension for a chunk at chunkCoord.
+    /// For interior chunks this equals ChunkShape. For edge chunks it is clamped to
+    /// the array extent, matching the layout of truncated edge-chunk files.
+    /// </summary>
+    private long[] ComputeTruncatedChunkShape(long[] chunkCoord)
+    {
+        var rank = Metadata.Rank;
+        var truncated = new long[rank];
+
+        for (int d = 0; d < rank; d++)
+        {
+            var origin = chunkCoord[d] * Metadata.ChunkShape[d];
+            truncated[d] = Math.Min(Metadata.Shape[d] - origin, Metadata.ChunkShape[d]);
+        }
+
+        return truncated;
+    }
+
+    /// <summary>
+    /// Copies elements from a C-order truncated chunk buffer (srcShape strides) into
+    /// the correct positions of a full-size C-order buffer (dstShape strides).
+    /// This is necessary when a Zarr implementation stores edge chunks without
+    /// fill-value padding — the decoded rows are narrower than a full chunk row,
+    /// so a flat copy would produce wrong strides starting from the second row.
+    /// </summary>
+    private static void ExpandTruncatedChunk(
+        byte[] src,
+        long[] srcShape,
+        byte[] dst,
+        long[] dstShape,
+        int elementSize)
+    {
+        var rank = srcShape.Length;
+        var start = new long[rank];
+
+        IterateNdRegion(start, srcShape, rank, indices =>
+        {
+            var srcByteOffset = (int)(ComputeFlatIndex(indices, srcShape) * elementSize);
+            var dstByteOffset = (int)(ComputeFlatIndex(indices, dstShape) * elementSize);
+
+            Buffer.BlockCopy(src, srcByteOffset, dst, dstByteOffset, elementSize);
+        });
+    }
+
     private static long[] ClampToChunk(
         long[] values,
         long[] chunkOrigin,
         long[] chunkShape,
-        bool   clampToStart)
+        bool clampToStart)
     {
         var result = new long[values.Length];
         for (int d = 0; d < values.Length; d++)
@@ -374,12 +436,12 @@ public sealed class ZarrArray
 
     private static long ComputeFlatIndex(long[] localIndices, long[] shape)
     {
-        long index  = 0;
+        long index = 0;
         long stride = 1;
 
         for (int d = shape.Length - 1; d >= 0; d--)
         {
-            index  += localIndices[d] * stride;
+            index += localIndices[d] * stride;
             stride *= shape[d];
         }
 
@@ -411,10 +473,10 @@ public sealed class ZarrArray
     // -------------------------------------------------------------------------
 
     private static void IterateNdRegion(
-        long[]          start,
-        long[]          end,
-        int             rank,
-        Action<long[]>  body)
+        long[] start,
+        long[] end,
+        int rank,
+        Action<long[]> body)
     {
         foreach (var coord in IterateNdCoordinates(start, end, rank))
             body(coord);
@@ -423,7 +485,7 @@ public sealed class ZarrArray
     private static IEnumerable<long[]> IterateNdCoordinates(
         long[] start,
         long[] end,    // EXCLUSIVE - [start, end)
-        int    rank)
+        int rank)
     {
         var current = (long[])start.Clone();
 
