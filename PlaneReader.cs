@@ -58,7 +58,7 @@ public static class PlaneReader
         }
 
         var region = new PixelRegion(start, end);
-        var result = await level.ReadPixelRegionAsync(region, ct).ConfigureAwait(false);
+        var result = await level.ReadPixelRegionAsync(region, ct: ct).ConfigureAwait(false);
 
         return new PlaneResult(result, axes);
     }
@@ -132,7 +132,7 @@ public static class PlaneReader
         var region = new PixelRegion(start, end);
 
         var result = await level
-            .ReadPixelRegionAsync(region, ct)
+            .ReadPixelRegionAsync(region, ct: ct)
             .ConfigureAwait(false);
 
         return new PlaneResult(result, axes);
@@ -221,7 +221,7 @@ public static class PlaneReader
         }
 
         var roi = new PhysicalROI(origin, size);
-        var result = await level.ReadRegionAsync(roi, ct).ConfigureAwait(false);
+        var result = await level.ReadRegionAsync(roi, ct: ct).ConfigureAwait(false);
 
         return new PlaneResult(result, axes);
     }

@@ -176,6 +176,7 @@ public sealed class ResolutionLevelNode
     /// </summary>
     public async Task<RegionResult> ReadRegionAsync(
         PhysicalROI       roi,
+        int?              maxParallelChunks = null,
         CancellationToken ct = default)
     {
         var pixelRegion = _transformService.PhysicalToPixel(roi, Dataset, Multiscale, Shape);
@@ -183,6 +184,7 @@ public sealed class ResolutionLevelNode
         var data = await _array.ReadRegionAsync(
             pixelRegion.Start,
             pixelRegion.End,
+            maxParallelChunks,
             ct).ConfigureAwait(false);
 
         return new RegionResult(
@@ -197,11 +199,13 @@ public sealed class ResolutionLevelNode
     /// </summary>
     public async Task<RegionResult> ReadPixelRegionAsync(
         PixelRegion       region,
+        int?              maxParallelChunks = null,
         CancellationToken ct = default)
     {
         var data = await _array.ReadRegionAsync(
             region.Start,
             region.End,
+            maxParallelChunks,
             ct).ConfigureAwait(false);
 
         return new RegionResult(

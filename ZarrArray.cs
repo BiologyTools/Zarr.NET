@@ -35,10 +35,25 @@ public sealed class ZarrArray
     /// Reads a region of the array defined by per-axis [start, end) ranges.
     /// Returns the decoded bytes for that region, assembled from the
     /// relevant chunks. Shape of the returned region is (end - start) per axis.
+    ///
+    /// Chunks are fetched and decoded in parallel, bounded by maxParallelChunks.
+    /// Each chunk maps to a non-overlapping slice of the output buffer, so the
+    /// copy step is safe without locking.
     /// </summary>
+    /// <param name="regionStart">Per-axis inclusive start indices.</param>
+    /// <param name="regionEnd">Per-axis exclusive end indices.</param>
+    /// <param name="maxParallelChunks">
+    /// Maximum number of chunks to fetch/decode concurrently.
+    /// Defaults to <see cref="Environment.ProcessorCount"/>.
+    /// HTTP callers may benefit from higher values (e.g. 16–32);
+    /// local disk callers can leave the default or lower it.
+    /// Pass 1 to disable parallelism.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
     public async Task<byte[]> ReadRegionAsync(
         long[] regionStart,
         long[] regionEnd,
+        int? maxParallelChunks = null,
         CancellationToken ct = default)
     {
         ValidateRegion(regionStart, regionEnd);
@@ -49,12 +64,17 @@ public sealed class ZarrArray
         var outputBuffer = new byte[totalElements * elementSize];
 
         var chunkCoords = EnumerateChunkCoordinates(regionStart, regionEnd);
+        var parallelism = maxParallelChunks ?? Environment.ProcessorCount;
 
-        foreach (var chunkCoord in chunkCoords)
+        var options = new ParallelOptions
         {
-            ct.ThrowIfCancellationRequested();
+            MaxDegreeOfParallelism = Math.Max(1, parallelism),
+            CancellationToken = ct
+        };
 
-            var chunkData = await ReadChunkAsync(chunkCoord, ct).ConfigureAwait(false);
+        await Parallel.ForEachAsync(chunkCoords, options, async (chunkCoord, token) =>
+        {
+            var chunkData = await ReadChunkAsync(chunkCoord, token).ConfigureAwait(false);
 
             CopyChunkRegionToOutput(
                 chunkCoord,
@@ -64,7 +84,7 @@ public sealed class ZarrArray
                 regionShape,
                 outputBuffer,
                 elementSize);
-        }
+        }).ConfigureAwait(false);
 
         return outputBuffer;
     }
