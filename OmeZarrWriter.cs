@@ -191,11 +191,20 @@ public sealed class OmeZarrWriter : IAsyncDisposable
             coordinateTransformations = new[] { scaleTransform }
         };
 
+        // NGFF 0.5: OME metadata is wrapped under an "ome" envelope in zarr.json
+        // attributes. This replaces the flat layout used in 0.4.
         var rootGroupDoc = new
         {
             zarr_format = 3,
             node_type   = "group",
-            attributes  = new { multiscales = new[] { multiscale } }
+            attributes  = new
+            {
+                ome = new
+                {
+                    version     = "0.5",
+                    multiscales = new[] { multiscale }
+                }
+            }
         };
 
         await WriteJsonAsync("zarr.json", rootGroupDoc, ct).ConfigureAwait(false);
@@ -205,6 +214,8 @@ public sealed class OmeZarrWriter : IAsyncDisposable
     {
         var d = _descriptor;
 
+        // NGFF 0.5 requires dimension_names in array metadata (MUST).
+        // These must match the axes declared in the multiscales metadata.
         var arrayDoc = new
         {
             zarr_format = 3,
@@ -221,8 +232,9 @@ public sealed class OmeZarrWriter : IAsyncDisposable
                 name          = "default",
                 configuration = new { separator = "/" }
             },
-            fill_value = 0,
-            codecs     = new object[]
+            fill_value      = 0,
+            dimension_names = new[] { "t", "c", "z", "y", "x" },
+            codecs          = new object[]
             {
                 new
                 {

@@ -33,14 +33,24 @@ public sealed class OmeZarrReader : IAsyncDisposable
 
     public OmeAttributesParser.OmeNodeType RootNodeType { get; }
 
+    /// <summary>
+    /// The detected OME-NGFF specification version (e.g. "0.4", "0.5").
+    /// Determined from the "ome.version" envelope (0.5+) or from
+    /// "multiscales[0].version" (0.4 and earlier).
+    /// Null if no version string is present in the metadata.
+    /// </summary>
+    public string? NgffVersion { get; }
+
     private OmeZarrReader(
         IZarrStore  store,
         ZarrGroup   rootGroup,
-        OmeAttributesParser.OmeNodeType rootNodeType)
+        OmeAttributesParser.OmeNodeType rootNodeType,
+        string?     ngffVersion)
     {
         _store       = store;
         _rootGroup   = rootGroup;
         RootNodeType = rootNodeType;
+        NgffVersion  = ngffVersion;
     }
 
     // -------------------------------------------------------------------------
@@ -64,10 +74,12 @@ public sealed class OmeZarrReader : IAsyncDisposable
 
         try
         {
-            var rootGroup = await ZarrGroup.OpenRootAsync(store, ct).ConfigureAwait(false);
-            var nodeType = OmeAttributesParser.DetectNodeType(rootGroup.Metadata.RawAttributes);
+            var rootGroup   = await ZarrGroup.OpenRootAsync(store, ct).ConfigureAwait(false);
+            var attributes  = rootGroup.Metadata.RawAttributes;
+            var nodeType    = OmeAttributesParser.DetectNodeType(attributes);
+            var ngffVersion = OmeAttributesParser.DetectNgffVersion(attributes);
 
-            return new OmeZarrReader(store, rootGroup, nodeType);
+            return new OmeZarrReader(store, rootGroup, nodeType, ngffVersion);
         }
         catch
         {
@@ -84,10 +96,12 @@ public sealed class OmeZarrReader : IAsyncDisposable
         IZarrStore        store,
         CancellationToken ct = default)
     {
-        var rootGroup = await ZarrGroup.OpenRootAsync(store, ct).ConfigureAwait(false);
-        var nodeType = OmeAttributesParser.DetectNodeType(rootGroup.Metadata.RawAttributes);
+        var rootGroup   = await ZarrGroup.OpenRootAsync(store, ct).ConfigureAwait(false);
+        var attributes  = rootGroup.Metadata.RawAttributes;
+        var nodeType    = OmeAttributesParser.DetectNodeType(attributes);
+        var ngffVersion = OmeAttributesParser.DetectNgffVersion(attributes);
 
-        return new OmeZarrReader(store, rootGroup, nodeType);
+        return new OmeZarrReader(store, rootGroup, nodeType, ngffVersion);
     }
 
     // -------------------------------------------------------------------------
@@ -198,10 +212,47 @@ public sealed class OmeZarrReader : IAsyncDisposable
     private void EnsureNodeType(OmeAttributesParser.OmeNodeType expected, string callerName)
     {
         if (RootNodeType != expected)
+        {
+            var attributesHint = DescribeRawAttributes();
+
             throw new InvalidOperationException(
                 $"{callerName} requires root node type '{expected}', " +
                 $"but detected '{RootNodeType}'. " +
-                $"Use OpenRoot() for automatic dispatch.");
+                $"NGFF version: {NgffVersion ?? "(none)"}. " +
+                $"Root attributes: {attributesHint}. " +
+                (RootNodeType == OmeAttributesParser.OmeNodeType.Unknown
+                    ? "The root group attributes do not contain any recognised OME-Zarr key " +
+                      "(multiscales, plate, well, labels) — check whether this is a " +
+                      "bioformats2raw layout (navigate into sub-groups) or an unsupported " +
+                      "metadata format."
+                    : $"Use OpenRoot() for automatic dispatch, or " +
+                      $"use the appropriate accessor (e.g. AsPlate() for plate data)."));
+        }
+    }
+
+    /// <summary>
+    /// Returns a short summary of the root attribute keys for diagnostics.
+    /// </summary>
+    private string DescribeRawAttributes()
+    {
+        var attrs = _rootGroup.Metadata.RawAttributes;
+        if (attrs is null)
+            return "(null — no attributes found)";
+
+        try
+        {
+            var keys = new List<string>();
+            foreach (var prop in attrs.Value.EnumerateObject())
+                keys.Add(prop.Name);
+
+            return keys.Count == 0
+                ? "(empty object)"
+                : $"{{ {string.Join(", ", keys)} }}";
+        }
+        catch
+        {
+            return "(unable to enumerate)";
+        }
     }
 
     private System.Text.Json.JsonElement RequireAttributes()

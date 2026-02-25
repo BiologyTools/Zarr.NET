@@ -7,6 +7,14 @@ namespace OmeZarr.Core.OmeZarr.Metadata;
 /// Detects the OME-Zarr node type from a raw attributes JsonElement and
 /// deserializes the relevant metadata models. This is the single entry
 /// point between the raw Zarr attributes and the typed OME metadata layer.
+///
+/// Handles both NGFF 0.4 (flat) and 0.5 ("ome"-wrapped) attribute layouts:
+///
+///   0.4 / v2:  { "multiscales": [...] }
+///   0.5 / v3:  { "ome": { "version": "0.5", "multiscales": [...] } }
+///
+/// The "ome" envelope is unwrapped transparently so all downstream parsing
+/// sees the same structure regardless of spec version.
 /// </summary>
 public static class OmeAttributesParser
 {
@@ -38,7 +46,7 @@ public static class OmeAttributesParser
         if (attributes is null)
             return OmeNodeType.Unknown;
 
-        var attrs = attributes.Value;
+        var attrs = ResolveOmeAttributes(attributes.Value);
 
         if (attrs.TryGetProperty("plate", out _))
             return OmeNodeType.Plate;
@@ -60,12 +68,60 @@ public static class OmeAttributesParser
     }
 
     // -------------------------------------------------------------------------
+    // NGFF version detection
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Detects the NGFF specification version from the attributes.
+    ///
+    /// Checks two locations:
+    ///   1. The "ome.version" field (0.5+ envelope style)
+    ///   2. The "multiscales[0].version" field (0.4 and earlier)
+    ///
+    /// Returns null if no version can be determined.
+    /// </summary>
+    public static string? DetectNgffVersion(JsonElement? attributes)
+    {
+        if (attributes is null)
+            return null;
+
+        var raw = attributes.Value;
+
+        // Check for "ome" envelope version first — this is the 0.5+ indicator
+        if (raw.TryGetProperty("ome", out var omeEl) &&
+            omeEl.TryGetProperty("version", out var omeVersionEl) &&
+            omeVersionEl.ValueKind == JsonValueKind.String)
+        {
+            return omeVersionEl.GetString();
+        }
+
+        // Fall back to multiscales[0].version (0.4 and earlier)
+        var resolved = ResolveOmeAttributes(raw);
+
+        if (resolved.TryGetProperty("multiscales", out var msEl) &&
+            msEl.ValueKind == JsonValueKind.Array &&
+            msEl.GetArrayLength() > 0)
+        {
+            var first = msEl[0];
+            if (first.TryGetProperty("version", out var versionEl) &&
+                versionEl.ValueKind == JsonValueKind.String)
+            {
+                return versionEl.GetString();
+            }
+        }
+
+        return null;
+    }
+
+    // -------------------------------------------------------------------------
     // Typed metadata parsing
     // -------------------------------------------------------------------------
 
     public static MultiscaleMetadata[] ParseMultiscales(JsonElement attributes)
     {
-        if (!attributes.TryGetProperty("multiscales", out var multiscalesEl))
+        var resolved = ResolveOmeAttributes(attributes);
+
+        if (!resolved.TryGetProperty("multiscales", out var multiscalesEl))
             throw new InvalidOperationException("Attributes do not contain a 'multiscales' key.");
 
         return JsonSerializer.Deserialize<MultiscaleMetadataJson[]>(multiscalesEl.GetRawText(), _options)
@@ -75,7 +131,9 @@ public static class OmeAttributesParser
 
     public static PlateMetadata ParsePlate(JsonElement attributes)
     {
-        if (!attributes.TryGetProperty("plate", out var plateEl))
+        var resolved = ResolveOmeAttributes(attributes);
+
+        if (!resolved.TryGetProperty("plate", out var plateEl))
             throw new InvalidOperationException("Attributes do not contain a 'plate' key.");
 
         return JsonSerializer.Deserialize<PlateMetadataJson>(plateEl.GetRawText(), _options)
@@ -84,7 +142,9 @@ public static class OmeAttributesParser
 
     public static WellMetadata ParseWell(JsonElement attributes)
     {
-        if (!attributes.TryGetProperty("well", out var wellEl))
+        var resolved = ResolveOmeAttributes(attributes);
+
+        if (!resolved.TryGetProperty("well", out var wellEl))
             throw new InvalidOperationException("Attributes do not contain a 'well' key.");
 
         return JsonSerializer.Deserialize<WellMetadataJson>(wellEl.GetRawText(), _options)
@@ -93,7 +153,9 @@ public static class OmeAttributesParser
 
     public static LabelGroupMetadata ParseLabelGroup(JsonElement attributes)
     {
-        if (!attributes.TryGetProperty("labels", out var labelsEl))
+        var resolved = ResolveOmeAttributes(attributes);
+
+        if (!resolved.TryGetProperty("labels", out var labelsEl))
             throw new InvalidOperationException("Attributes do not contain a 'labels' key.");
 
         var labels = JsonSerializer.Deserialize<string[]>(labelsEl.GetRawText(), _options)
@@ -104,11 +166,36 @@ public static class OmeAttributesParser
 
     public static ImageLabelMetadata ParseImageLabel(JsonElement attributes)
     {
-        if (!attributes.TryGetProperty("image-label", out var labelEl))
+        var resolved = ResolveOmeAttributes(attributes);
+
+        if (!resolved.TryGetProperty("image-label", out var labelEl))
             throw new InvalidOperationException("Attributes do not contain an 'image-label' key.");
 
         return JsonSerializer.Deserialize<ImageLabelMetadataJson>(labelEl.GetRawText(), _options)
                !.ToModel();
+    }
+
+    // -------------------------------------------------------------------------
+    // "ome" envelope resolution
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// If the attributes contain an "ome" object (NGFF 0.5+ layout), returns
+    /// the inner element so callers see the same key structure as NGFF 0.4.
+    /// Otherwise returns the original element unchanged.
+    ///
+    /// NGFF 0.4:  { "multiscales": [...] }              → returned as-is
+    /// NGFF 0.5:  { "ome": { "multiscales": [...] } }   → returns the "ome" inner object
+    /// </summary>
+    private static JsonElement ResolveOmeAttributes(JsonElement attributes)
+    {
+        if (attributes.TryGetProperty("ome", out var omeEl) &&
+            omeEl.ValueKind == JsonValueKind.Object)
+        {
+            return omeEl;
+        }
+
+        return attributes;
     }
 
     // -------------------------------------------------------------------------

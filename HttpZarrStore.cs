@@ -144,10 +144,36 @@ public sealed class HttpZarrStore : IZarrStore
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Head, url);
-            var response = await _httpClient.SendAsync(request, ct).ConfigureAwait(false);
+            // Try HEAD first — fast and lightweight
+            using var headRequest = new HttpRequestMessage(HttpMethod.Head, url);
+            var headResponse = await _httpClient.SendAsync(headRequest, ct).ConfigureAwait(false);
 
-            return response.IsSuccessStatusCode;
+            if (headResponse.IsSuccessStatusCode)
+                return true;
+
+            if (headResponse.StatusCode == HttpStatusCode.NotFound)
+                return false;
+
+            // HEAD returned a non-success, non-404 status (e.g. 403, 405).
+            // Some S3/Ceph implementations return 403 Forbidden for HEAD on
+            // objects that are publicly readable via GET. Fall back to a GET
+            // with a minimal range to confirm existence without downloading
+            // the whole object.
+            if (IsMetadataKey(key))
+            {
+                // For small metadata files, just try a full GET and cache the result.
+                // This avoids an extra round-trip when ReadAsync is called next.
+                var data = await ReadAsync(key, ct).ConfigureAwait(false);
+                return data is not null;
+            }
+
+            // For non-metadata keys, try a range GET to avoid large downloads.
+            using var rangeRequest = new HttpRequestMessage(HttpMethod.Get, url);
+            rangeRequest.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 0);
+            var rangeResponse = await _httpClient.SendAsync(rangeRequest, ct).ConfigureAwait(false);
+
+            return rangeResponse.IsSuccessStatusCode
+                || rangeResponse.StatusCode == HttpStatusCode.PartialContent;
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
