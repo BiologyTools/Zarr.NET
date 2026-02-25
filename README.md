@@ -28,7 +28,7 @@ dotnet build
 
 ### Dependencies
 
-- .NET 8.0 or higher
+- .NET 10.0 or higher
 - ZstdSharp.Port (managed zstd implementation)
 - System.Text.Json (included in .NET 8.0)
 
@@ -192,7 +192,7 @@ The library is structured in clean, composable layers:
 - **Gzip** - Standard compression (via System.IO.Compression)
 - **Zstandard** - High-performance compression (via ZstdSharp.Port)
 - **Uncompressed** - Raw data
-- ⚠️ **Blosc** - Not yet supported (planned)
+- **Blosc**
 
 ### OME-Zarr Node Types
 - **Multiscale Images** - Pyramidal resolution levels with coordinate transforms
@@ -423,7 +423,7 @@ for (int y = 0; y < height; y += tileSize)
 ## Roadmap
 
 - [x] HTTP/S3 remote store support
-- [ ] Blosc codec support
+- [x] Blosc codec support
 - [ ] AWS S3 native SDK integration (ListObjects, credentials)
 - [ ] Sharded Zarr v3 support
 - [ ] OME-Zarr writer API for creating new datasets
@@ -452,26 +452,8 @@ MIT License - see LICENSE file for details
 - **ZstdSharp** - Managed Zstandard compression
 - Inspired by zarr-python, ome-zarr-py, and the broader scientific imaging community
 
-## Citation
-
-If you use this library in your research, please cite:
-
-```bibtex
-@software{omezarr_dotnet,
-  title = {OmeZarr.NET: A C# library for OME-Zarr datasets},
-  author = {Your Name},
-  year = {2025},
-  url = {https://github.com/yourusername/OmeZarr.NET}
-}
-```
-
 ## Support
-
-- 📖 [Full API Documentation](docs/API.md)
-- 🐛 [Report Issues](https://github.com/yourusername/OmeZarr.NET/issues)
-- 💬 [Discussions](https://github.com/yourusername/OmeZarr.NET/discussions)
-- 📧 Contact: your.email@example.com
-
+Please use image.sc forum for discussion.
 ---
 
 **Built with ❤️ for the scientific imaging community**
