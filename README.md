@@ -1,4 +1,4 @@
-# OmeZarr.NET
+# Zarr.NET
 
 A high-performance, fully async C# library for reading and writing OME-Zarr datasets with comprehensive support for multiscale images, labels, and High-Content Screening (HCS) plate data.
 
@@ -11,7 +11,7 @@ A high-performance, fully async C# library for reading and writing OME-Zarr data
 ✅ **Compression** - Gzip, Zstandard (zstd) codec support  
 ✅ **Memory Efficient** - Chunk-level reading with streaming support  
 ✅ **Type Safe** - Strongly typed metadata models and coordinate transformations  
-✅ **Cross-Platform** - .NET 8.0, works on Windows, Linux, macOS  
+✅ **Cross-Platform** - .NET 10.0, works on Windows, Linux, macOS  
 ✅ **Well-Architected** - Clean separation of concerns, testable, extensible  
 
 ## Installation
@@ -28,7 +28,7 @@ dotnet build
 
 ### Dependencies
 
-- .NET 8.0 or higher
+- .NET 10.0 or higher
 - ZstdSharp.Port (managed zstd implementation)
 - System.Text.Json (included in .NET 8.0)
 
@@ -183,16 +183,13 @@ The library is structured in clean, composable layers:
 ## Supported Features
 
 ### Data Types
-- `uint8`, `uint16`, `uint32`, `uint64`
-- `int8`, `int16`, `int32`, `int64`
-- `float32`, `float64`
-- `bool`
+- `uint8`, `uint16`
 
 ### Compression
 - **Gzip** - Standard compression (via System.IO.Compression)
 - **Zstandard** - High-performance compression (via ZstdSharp.Port)
 - **Uncompressed** - Raw data
-- ⚠️ **Blosc** - Not yet supported (planned)
+- **Blosc**
 
 ### OME-Zarr Node Types
 - **Multiscale Images** - Pyramidal resolution levels with coordinate transforms
@@ -413,8 +410,6 @@ for (int y = 0; y < height; y += tileSize)
 ```
 
 ## Limitations
-
-- **Blosc compression** - Not yet supported. Re-compress with gzip or zstd if needed.
 - **Sharded Zarr v3** - Not yet supported (planned).
 - **HTTP store listing** - ListChildNamesAsync() not supported for HTTP stores. Use explicit path navigation.
 - **Write support to HTTP** - Read-only for remote stores. Use LocalFileSystemStore for writing.
@@ -423,7 +418,7 @@ for (int y = 0; y < height; y += tileSize)
 ## Roadmap
 
 - [x] HTTP/S3 remote store support
-- [ ] Blosc codec support
+- [x] Blosc codec support
 - [ ] AWS S3 native SDK integration (ListObjects, credentials)
 - [ ] Sharded Zarr v3 support
 - [ ] OME-Zarr writer API for creating new datasets
@@ -442,8 +437,7 @@ Contributions welcome! Please:
 4. Open an issue first for major changes
 
 ## License
-
-MIT License - see LICENSE file for details
+- GNU GPL 3.0 only.
 
 ## Acknowledgments
 
@@ -452,26 +446,8 @@ MIT License - see LICENSE file for details
 - **ZstdSharp** - Managed Zstandard compression
 - Inspired by zarr-python, ome-zarr-py, and the broader scientific imaging community
 
-## Citation
-
-If you use this library in your research, please cite:
-
-```bibtex
-@software{omezarr_dotnet,
-  title = {OmeZarr.NET: A C# library for OME-Zarr datasets},
-  author = {Your Name},
-  year = {2025},
-  url = {https://github.com/yourusername/OmeZarr.NET}
-}
-```
-
 ## Support
-
-- 📖 [Full API Documentation](docs/API.md)
-- 🐛 [Report Issues](https://github.com/yourusername/OmeZarr.NET/issues)
-- 💬 [Discussions](https://github.com/yourusername/OmeZarr.NET/discussions)
-- 📧 Contact: your.email@example.com
-
+Please use image.sc forum for discussion.
 ---
 
 **Built with ❤️ for the scientific imaging community**
