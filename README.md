@@ -1,4 +1,4 @@
-# OmeZarr.NET
+# Zarr.NET
 
 A high-performance, fully async C# library for reading and writing OME-Zarr datasets with comprehensive support for multiscale images, labels, and High-Content Screening (HCS) plate data.
 
@@ -11,7 +11,7 @@ A high-performance, fully async C# library for reading and writing OME-Zarr data
 ✅ **Compression** - Gzip, Zstandard (zstd) codec support  
 ✅ **Memory Efficient** - Chunk-level reading with streaming support  
 ✅ **Type Safe** - Strongly typed metadata models and coordinate transformations  
-✅ **Cross-Platform** - .NET 8.0, works on Windows, Linux, macOS  
+✅ **Cross-Platform** - .NET 10.0, works on Windows, Linux, macOS  
 ✅ **Well-Architected** - Clean separation of concerns, testable, extensible  
 
 ## Installation
@@ -183,10 +183,7 @@ The library is structured in clean, composable layers:
 ## Supported Features
 
 ### Data Types
-- `uint8`, `uint16`, `uint32`, `uint64`
-- `int8`, `int16`, `int32`, `int64`
-- `float32`, `float64`
-- `bool`
+- `uint8`, `uint16`
 
 ### Compression
 - **Gzip** - Standard compression (via System.IO.Compression)
@@ -413,8 +410,6 @@ for (int y = 0; y < height; y += tileSize)
 ```
 
 ## Limitations
-
-- **Blosc compression** - Not yet supported. Re-compress with gzip or zstd if needed.
 - **Sharded Zarr v3** - Not yet supported (planned).
 - **HTTP store listing** - ListChildNamesAsync() not supported for HTTP stores. Use explicit path navigation.
 - **Write support to HTTP** - Read-only for remote stores. Use LocalFileSystemStore for writing.
@@ -442,8 +437,7 @@ Contributions welcome! Please:
 4. Open an issue first for major changes
 
 ## License
-
-MIT License - see LICENSE file for details
+- GNU GPL 3.0 only.
 
 ## Acknowledgments
 
