@@ -29,6 +29,7 @@ public sealed class OmeZarrReader : IAsyncDisposable
 {
     private readonly IZarrStore  _store;
     private readonly ZarrGroup   _rootGroup;
+    private readonly System.Text.Json.JsonElement? _omeGroupAttributes;  // only for bioformats2raw
     private bool                 _disposed;
 
     public OmeAttributesParser.OmeNodeType RootNodeType { get; }
@@ -45,12 +46,14 @@ public sealed class OmeZarrReader : IAsyncDisposable
         IZarrStore  store,
         ZarrGroup   rootGroup,
         OmeAttributesParser.OmeNodeType rootNodeType,
-        string?     ngffVersion)
+        string?     ngffVersion,
+        System.Text.Json.JsonElement? omeGroupAttributes = null)
     {
-        _store       = store;
-        _rootGroup   = rootGroup;
-        RootNodeType = rootNodeType;
-        NgffVersion  = ngffVersion;
+        _store                = store;
+        _rootGroup            = rootGroup;
+        RootNodeType          = rootNodeType;
+        NgffVersion           = ngffVersion;
+        _omeGroupAttributes   = omeGroupAttributes;
     }
 
     // -------------------------------------------------------------------------
@@ -79,7 +82,16 @@ public sealed class OmeZarrReader : IAsyncDisposable
             var nodeType    = OmeAttributesParser.DetectNodeType(attributes);
             var ngffVersion = OmeAttributesParser.DetectNgffVersion(attributes);
 
-            return new OmeZarrReader(store, rootGroup, nodeType, ngffVersion);
+            // For bioformats2raw layouts, pre-load the OME sub-group attributes
+            // so the collection metadata (series list) is ready at construction time
+            System.Text.Json.JsonElement? omeGroupAttributes = null;
+            if (nodeType == OmeAttributesParser.OmeNodeType.Bioformats2RawCollection)
+            {
+                omeGroupAttributes = await TryReadOmeGroupAttributesAsync(
+                    rootGroup, ct).ConfigureAwait(false);
+            }
+            return new OmeZarrReader(store, rootGroup, nodeType, ngffVersion,
+                    omeGroupAttributes);
         }
         catch
         {
@@ -101,7 +113,15 @@ public sealed class OmeZarrReader : IAsyncDisposable
         var nodeType    = OmeAttributesParser.DetectNodeType(attributes);
         var ngffVersion = OmeAttributesParser.DetectNgffVersion(attributes);
 
-        return new OmeZarrReader(store, rootGroup, nodeType, ngffVersion);
+        System.Text.Json.JsonElement? omeGroupAttributes = null;
+        if (nodeType == OmeAttributesParser.OmeNodeType.Bioformats2RawCollection)
+        {
+            omeGroupAttributes = await TryReadOmeGroupAttributesAsync(
+                rootGroup, ct).ConfigureAwait(false);
+        }
+
+        return new OmeZarrReader(store, rootGroup, nodeType, ngffVersion,
+            omeGroupAttributes);
     }
 
     // -------------------------------------------------------------------------
@@ -174,9 +194,57 @@ public sealed class OmeZarrReader : IAsyncDisposable
     }
 
     /// <summary>
+    /// Returns the root as a Bioformats2RawCollectionNode.
+    /// Throws if the root is not a bioformats2raw.layout wrapper.
+    /// </summary>
+    public Bioformats2RawCollectionNode AsBioformats2RawCollection()
+    {
+        EnsureNodeType(OmeAttributesParser.OmeNodeType.Bioformats2RawCollection,
+            nameof(AsBioformats2RawCollection));
+
+        var attributes = RequireAttributes();
+        var meta = OmeAttributesParser.ParseBioformats2Raw(attributes, _omeGroupAttributes);
+
+        return new Bioformats2RawCollectionNode(_rootGroup, meta);
+    }
+
+    /// <summary>
+    /// Opens the first multiscale image, automatically unwrapping a
+    /// bioformats2raw.layout wrapper if present.
+    ///
+    /// Use this when you want a MultiscaleNode regardless of whether the
+    /// dataset is a direct multiscale image or a bioformats2raw wrapper.
+    /// For multi-series bioformats2raw datasets, use AsBioformats2RawCollection()
+    /// to navigate individual series explicitly.
+    /// </summary>
+    public async Task<MultiscaleNode> AsMultiscaleImageAsync(
+        CancellationToken ct = default)
+    {
+        // Direct multiscale — no navigation needed
+        if (RootNodeType == OmeAttributesParser.OmeNodeType.MultiscaleImage ||
+            RootNodeType == OmeAttributesParser.OmeNodeType.LabelImage)
+        {
+            return AsMultiscaleImage();
+        }
+
+        // Auto-unwrap bioformats2raw single/first series
+        if (RootNodeType == OmeAttributesParser.OmeNodeType.Bioformats2RawCollection)
+        {
+            var collection = AsBioformats2RawCollection();
+            return await collection.OpenSeriesAsync(0, ct).ConfigureAwait(false);
+        }
+
+        // Everything else is a type mismatch — EnsureNodeType will throw
+        EnsureNodeType(OmeAttributesParser.OmeNodeType.MultiscaleImage,
+            nameof(AsMultiscaleImageAsync));
+        return null!; // unreachable
+    }
+
+    /// <summary>
     /// Attempts to determine the root node type and return a general-purpose
     /// navigation entry point without needing to know the type in advance.
-    /// Returns one of: MultiscaleNode, PlateNode, WellNode, LabelGroupNode.
+    /// Returns one of: MultiscaleNode, PlateNode, WellNode, LabelGroupNode,
+    /// Bioformats2RawCollectionNode.
     /// </summary>
     public OmeZarrNode OpenRoot()
     {
@@ -197,10 +265,16 @@ public sealed class OmeZarrReader : IAsyncDisposable
             OmeAttributesParser.OmeNodeType.LabelImage =>
                 new MultiscaleNode(_rootGroup, OmeAttributesParser.ParseMultiscales(attributes!.Value)),
 
+            OmeAttributesParser.OmeNodeType.Bioformats2RawCollection =>
+                new Bioformats2RawCollectionNode(
+                    _rootGroup,
+                    OmeAttributesParser.ParseBioformats2Raw(
+                        attributes!.Value, _omeGroupAttributes)),
+
             _ => throw new InvalidOperationException(
                 $"Cannot determine OME-Zarr node type. " +
                 $"Root attributes do not contain a recognised OME-Zarr key " +
-                $"(multiscales, plate, well, labels). " +
+                $"(multiscales, plate, well, labels, bioformats2raw.layout). " +
                 $"Path: {_rootGroup.GroupPath}")
         };
     }
@@ -208,6 +282,24 @@ public sealed class OmeZarrReader : IAsyncDisposable
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    private static async Task<System.Text.Json.JsonElement?> TryReadOmeGroupAttributesAsync(
+        ZarrGroup         rootGroup,
+        CancellationToken ct)
+    {
+        try
+        {
+            if (!await rootGroup.HasChildAsync("OME", ct).ConfigureAwait(false))
+                return null;
+
+            var omeGroup = await rootGroup.OpenGroupAsync("OME", ct).ConfigureAwait(false);
+            return omeGroup.Metadata.RawAttributes;
+        }
+        catch
+        {
+            return null;  // OME sub-group is optional per spec
+        }
+    }
 
     private void EnsureNodeType(OmeAttributesParser.OmeNodeType expected, string callerName)
     {
@@ -222,9 +314,12 @@ public sealed class OmeZarrReader : IAsyncDisposable
                 $"Root attributes: {attributesHint}. " +
                 (RootNodeType == OmeAttributesParser.OmeNodeType.Unknown
                     ? "The root group attributes do not contain any recognised OME-Zarr key " +
-                      "(multiscales, plate, well, labels) — check whether this is a " +
-                      "bioformats2raw layout (navigate into sub-groups) or an unsupported " +
-                      "metadata format."
+                      "(multiscales, plate, well, labels, bioformats2raw.layout) — check whether " +
+                      "this is an unsupported metadata format."
+                    : RootNodeType == OmeAttributesParser.OmeNodeType.Bioformats2RawCollection
+                    ? "This is a bioformats2raw.layout wrapper. Use AsBioformats2RawCollection() " +
+                      "to navigate series explicitly, or AsMultiscaleImageAsync() to auto-unwrap " +
+                      "the first series."
                     : $"Use OpenRoot() for automatic dispatch, or " +
                       $"use the appropriate accessor (e.g. AsPlate() for plate data)."));
         }

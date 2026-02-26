@@ -279,6 +279,11 @@ public sealed class BloscCodec : IZarrCodec
         }
         catch (Exception e)
         {
+            if(streamOffset == frame.Length)
+            {
+                //We are at the end of the array, which means this block is all zeros (csize == 0) and there are no data bytes following. This is a valid case, so we can just return here.
+                return 0;
+            }
             Console.WriteLine(e.Message);
         }
         

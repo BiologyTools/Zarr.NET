@@ -75,7 +75,8 @@ public sealed class HttpZarrStore : IZarrStore
         try
         {
             var response = await _httpClient.GetAsync(url, ct).ConfigureAwait(false);
-
+            System.Diagnostics.Debug.WriteLine(
+    $"[HttpZarrStore] GET {url} → {(int)response.StatusCode} {response.StatusCode}");
             if (response.StatusCode == HttpStatusCode.NotFound)
             {
                 // Cache negative result for metadata

@@ -30,7 +30,7 @@ public sealed class ZarrArray
     // -------------------------------------------------------------------------
     // Public API
     // -------------------------------------------------------------------------
-
+    public const int MaxParallelChunks = 16;
     /// <summary>
     /// Reads a region of the array defined by per-axis [start, end) ranges.
     /// Returns the decoded bytes for that region, assembled from the
@@ -53,7 +53,7 @@ public sealed class ZarrArray
     public async Task<byte[]> ReadRegionAsync(
         long[] regionStart,
         long[] regionEnd,
-        int? maxParallelChunks = null,
+        int? maxParallelChunks = MaxParallelChunks,
         CancellationToken ct = default)
     {
         ValidateRegion(regionStart, regionEnd);

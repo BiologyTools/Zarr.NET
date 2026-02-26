@@ -59,7 +59,6 @@ public sealed class CodecPipeline
         // BytesCodec needs element size to handle endianness correctly
         if (codec is BytesCodec bytesCodec)
             return bytesCodec.DecodeWithElementSizeAsync(data, _elementSize, ct);
-
         return codec.DecodeAsync(data, ct);
     }
 

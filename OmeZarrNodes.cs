@@ -311,6 +311,104 @@ public sealed class LabelNode : OmeZarrNode
 }
 
 // =============================================================================
+// Bioformats2raw collection node
+// =============================================================================
+
+/// <summary>
+/// A bioformats2raw.layout wrapper group containing one or more image series.
+/// Analogous to a PlateNode — it's a container you navigate into.
+///
+/// The series are typically numbered sub-groups (0, 1, 2, ...).
+/// If the OME sub-group provides explicit series paths, those are used;
+/// otherwise series are discovered by probing consecutive numbered groups.
+/// </summary>
+public sealed class Bioformats2RawCollectionNode : OmeZarrNode
+{
+    public Bioformats2RawMetadata CollectionMetadata { get; }
+
+    internal Bioformats2RawCollectionNode(
+        ZarrGroup                group,
+        Bioformats2RawMetadata   collectionMetadata)
+        : base(group, OmeAttributesParser.OmeNodeType.Bioformats2RawCollection)
+    {
+        CollectionMetadata = collectionMetadata;
+    }
+
+    /// <summary>
+    /// Number of known image series, or null if discovery is required.
+    /// </summary>
+    public int? SeriesCount => CollectionMetadata.SeriesPaths?.Length;
+
+    // -------------------------------------------------------------------------
+    // Series navigation
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Opens an image series by index. For single-series datasets this is
+    /// just index 0. Returns a MultiscaleNode ready for resolution level access.
+    /// </summary>
+    public async Task<MultiscaleNode> OpenSeriesAsync(
+        int               seriesIndex = 0,
+        CancellationToken ct = default)
+    {
+        var seriesPath  = ResolveSeriesPath(seriesIndex);
+        var seriesGroup = await Group.OpenGroupAsync(seriesPath, ct).ConfigureAwait(false);
+
+        var attributes = seriesGroup.Metadata.RawAttributes
+            ?? throw new InvalidOperationException(
+                $"Series group at '{seriesPath}' has no attributes.");
+
+        var multiscales = OmeAttributesParser.ParseMultiscales(attributes);
+
+        return new MultiscaleNode(seriesGroup, multiscales);
+    }
+
+    /// <summary>
+    /// Discovers all available series paths. Uses the OME series list if
+    /// available, otherwise probes numbered sub-groups (0, 1, 2, ...).
+    /// </summary>
+    public async Task<IReadOnlyList<string>> DiscoverSeriesPathsAsync(
+        CancellationToken ct = default)
+    {
+        if (CollectionMetadata.SeriesPaths is not null)
+            return CollectionMetadata.SeriesPaths;
+
+        var paths = new List<string>();
+        for (int i = 0; ; i++)
+        {
+            if (!await Group.HasChildAsync(i.ToString(), ct).ConfigureAwait(false))
+                break;
+            paths.Add(i.ToString());
+        }
+
+        return paths;
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    private string ResolveSeriesPath(int seriesIndex)
+    {
+        if (CollectionMetadata.SeriesPaths is not null)
+        {
+            if (seriesIndex < 0 || seriesIndex >= CollectionMetadata.SeriesPaths.Length)
+                throw new ArgumentOutOfRangeException(nameof(seriesIndex),
+                    $"Series index {seriesIndex} is out of range. " +
+                    $"Collection has {CollectionMetadata.SeriesPaths.Length} series.");
+
+            return CollectionMetadata.SeriesPaths[seriesIndex];
+        }
+
+        if (seriesIndex < 0)
+            throw new ArgumentOutOfRangeException(nameof(seriesIndex),
+                "Series index must be non-negative.");
+
+        return seriesIndex.ToString();
+    }
+}
+
+// =============================================================================
 // HCS Plate and Well nodes
 // =============================================================================
 

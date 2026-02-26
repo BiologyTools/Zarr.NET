@@ -38,7 +38,8 @@ public static class OmeAttributesParser
         Plate,
         Well,
         LabelGroup,
-        LabelImage      // a multiscale that also carries image-label metadata
+        LabelImage,                 // a multiscale that also carries image-label metadata
+        Bioformats2RawCollection    // bioformats2raw.layout wrapper containing numbered series
     }
 
     public static OmeNodeType DetectNodeType(JsonElement? attributes)
@@ -48,8 +49,14 @@ public static class OmeAttributesParser
 
         var attrs = ResolveOmeAttributes(attributes.Value);
 
+        // Plate takes precedence even if bioformats2raw.layout is also present (per spec)
         if (attrs.TryGetProperty("plate", out _))
             return OmeNodeType.Plate;
+
+        // bioformats2raw wrapper — checked early because the wrapper root
+        // won't have multiscales/well/labels keys at this level
+        if (attrs.TryGetProperty("bioformats2raw.layout", out _))
+            return OmeNodeType.Bioformats2RawCollection;
 
         if (attrs.TryGetProperty("well", out _))
             return OmeNodeType.Well;
@@ -173,6 +180,44 @@ public static class OmeAttributesParser
 
         return JsonSerializer.Deserialize<ImageLabelMetadataJson>(labelEl.GetRawText(), _options)
                !.ToModel();
+    }
+
+    /// <summary>
+    /// Parses bioformats2raw.layout metadata from the root attributes and
+    /// optionally the OME sub-group attributes (which carry the series list).
+    /// </summary>
+    public static Bioformats2RawMetadata ParseBioformats2Raw(
+        JsonElement  rootAttributes,
+        JsonElement? omeGroupAttributes)
+    {
+        var resolved = ResolveOmeAttributes(rootAttributes);
+
+        // Layout version (always 3 in practice, but parse whatever is there)
+        int layoutVersion = 0;
+        if (resolved.TryGetProperty("bioformats2raw.layout", out var layoutEl) &&
+            layoutEl.ValueKind == JsonValueKind.Number)
+        {
+            layoutVersion = layoutEl.GetInt32();
+        }
+
+        // Series paths come from the OME sub-group's "series" attribute
+        string[]? seriesPaths = null;
+        if (omeGroupAttributes is not null)
+        {
+            var omeAttrs = omeGroupAttributes.Value;
+            if (omeAttrs.TryGetProperty("series", out var seriesEl) &&
+                seriesEl.ValueKind == JsonValueKind.Array)
+            {
+                seriesPaths = JsonSerializer.Deserialize<string[]>(
+                    seriesEl.GetRawText(), _options);
+            }
+        }
+
+        return new Bioformats2RawMetadata
+        {
+            LayoutVersion = layoutVersion,
+            SeriesPaths   = seriesPaths
+        };
     }
 
     // -------------------------------------------------------------------------

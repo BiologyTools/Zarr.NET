@@ -79,9 +79,20 @@ public sealed class ZarrArrayMetadata
     // Factory — Zarr v2
     // -------------------------------------------------------------------------
 
+    /// <summary>
+    /// Creates array metadata from a Zarr v2 .zarray document.
+    /// </summary>
+    /// <param name="arrayDoc">Parsed .zarray contents.</param>
+    /// <param name="attributes">Parsed .zattrs contents (optional).</param>
+    /// <param name="separatorOverride">
+    /// If provided, overrides the dimension separator regardless of what .zarray declares.
+    /// Used by the chunk-key probing logic when .zarray omits dimension_separator
+    /// and the store is found to use "/" (nested) chunk keys.
+    /// </param>
     public static ZarrArrayMetadata FromV2Document(
         ZarrV2ArrayDocument   arrayDoc,
-        JsonElement?          attributes)
+        JsonElement?          attributes,
+        string?               separatorOverride = null)
     {
         if (arrayDoc.ZarrFormat != 2)
             throw new InvalidOperationException(
@@ -89,8 +100,11 @@ public sealed class ZarrArrayMetadata
 
         var (dataType, byteOrder) = NumpyDtypeParser.Parse(arrayDoc.Dtype);
 
-        var separator = arrayDoc.DimensionSeparator ?? ".";
-        var codecs    = CodecFactory.BuildV2CodecPipeline(arrayDoc.Compressor, byteOrder);
+        var separator = separatorOverride
+                     ?? arrayDoc.DimensionSeparator
+                     ?? ".";
+
+        var codecs = CodecFactory.BuildV2CodecPipeline(arrayDoc.Compressor, byteOrder);
 
         return new ZarrArrayMetadata(
             arrayDoc.Shape,

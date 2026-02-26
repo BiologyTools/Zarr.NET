@@ -113,6 +113,29 @@ public sealed class FieldCount
 }
 
 // =============================================================================
+// Bioformats2raw collection metadata
+// =============================================================================
+
+/// <summary>
+/// Metadata for a bioformats2raw.layout wrapper group.
+/// The wrapper contains numbered sub-groups (0, 1, 2, ...) each holding
+/// a multiscale image, and optionally an OME sub-group with a series index
+/// and METADATA.ome.xml.
+/// </summary>
+public sealed class Bioformats2RawMetadata
+{
+    /// <summary>Layout version — always 3 in the current spec.</summary>
+    public int       LayoutVersion { get; init; }
+
+    /// <summary>
+    /// Explicit series paths from OME/.zattrs "series" attribute.
+    /// Null if the OME sub-group is absent or has no "series" attribute,
+    /// in which case series are discovered by probing consecutive numbered groups.
+    /// </summary>
+    public string[]? SeriesPaths   { get; init; }
+}
+
+// =============================================================================
 // HCS Well metadata
 // =============================================================================
 

@@ -84,7 +84,17 @@ public sealed class ZarrGroup
         {
             var arrayDoc   = await ReadV2ArrayAsync(childPath, ct).ConfigureAwait(false);
             var attributes = await TryReadV2AttrsAsync(childPath, ct).ConfigureAwait(false);
-            var metadata   = ZarrArrayMetadata.FromV2Document(arrayDoc, attributes);
+
+            // When .zarray omits dimension_separator we must probe the store
+            // to discover whether chunks use "/" (nested) or "." (flat) keys.
+            // bioformats2raw and many IDR datasets use "/" but predate the field.
+            var separatorOverride = arrayDoc.DimensionSeparator is null
+                ? await ProbeChunkKeySeparatorAsync(childPath, arrayDoc.Shape.Length, ct)
+                    .ConfigureAwait(false)
+                : null;
+
+            var metadata = ZarrArrayMetadata.FromV2Document(
+                arrayDoc, attributes, separatorOverride);
 
             return new ZarrArray(_store, childPath, metadata);
         }
@@ -259,6 +269,39 @@ public sealed class ZarrGroup
 
         var attrsDoc = ZarrV2AttrsDocument.Parse(bytes);
         return attrsDoc.Root;
+    }
+
+    // -------------------------------------------------------------------------
+    // Chunk key separator probing (Zarr v2)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// When a v2 .zarray omits the dimension_separator field, the spec
+    /// default is "." but many writers (bioformats2raw, older napari, etc.)
+    /// use "/" without declaring it. This method probes the store by
+    /// checking whether the chunk-zero key exists with "/" separators.
+    ///
+    /// Returns "/" if the slash-separated chunk-zero exists, null otherwise
+    /// (letting the caller fall back to the "." default).
+    ///
+    /// Only adds a single ExistsAsync call, which is a HEAD request for
+    /// HTTP stores — cheap and bounded.
+    /// </summary>
+    private async Task<string?> ProbeChunkKeySeparatorAsync(
+        string            arrayPath,
+        int               rank,
+        CancellationToken ct)
+    {
+        // Chunk zero with "/" separator: arrayPath/0/0/0/0/0
+        var slashChunkZero = arrayPath + "/" + string.Join("/", Enumerable.Repeat("0", rank));
+
+        if (await _store.ExistsAsync(slashChunkZero, ct).ConfigureAwait(false))
+            return "/";
+
+        // Slash key not found — the "." default is likely correct,
+        // or the array is empty (all chunks are virtual fill-value).
+        // Either way, returning null lets the caller use the spec default.
+        return null;
     }
 
     // -------------------------------------------------------------------------
