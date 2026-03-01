@@ -13,7 +13,7 @@ namespace OmeZarr.Core.Zarr.Store;
 /// </summary>
 public sealed class HttpZarrStore : IZarrStore
 {
-    private readonly HttpClient _httpClient;
+    private HttpClient _httpClient;
     private readonly string _baseUrl;
     private readonly bool _ownsHttpClient;
     private bool _disposed;
@@ -81,6 +81,7 @@ public sealed class HttpZarrStore : IZarrStore
 
     public async Task<byte[]?> ReadAsync(string key, CancellationToken ct = default)
     {
+        A:
         ThrowIfDisposed();
 
         // Check cache for metadata files
@@ -120,6 +121,11 @@ public sealed class HttpZarrStore : IZarrStore
         catch (TaskCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.RequestTimeout)
+        {
+           _httpClient = CreateDefaultHttpClient();
+            goto A;
         }
         catch (TaskCanceledException ex)
         {
