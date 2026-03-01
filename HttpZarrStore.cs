@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 
 namespace OmeZarr.Core.Zarr.Store;
@@ -17,24 +18,35 @@ public sealed class HttpZarrStore : IZarrStore
     private readonly bool _ownsHttpClient;
     private bool _disposed;
 
-    // Cache for frequently accessed metadata files
-    private readonly Dictionary<string, byte[]?> _metadataCache = new();
-    private readonly SemaphoreSlim _cacheLock = new(1, 1);
+    /// <summary>
+    /// Default maximum concurrent connections per server. Higher values
+    /// allow Parallel.ForEachAsync in ZarrArray to actually achieve
+    /// parallel HTTP fetches rather than queuing behind 2 connections.
+    /// </summary>
+    public const int DefaultMaxConnectionsPerServer = 48;
+
+    // Cache for frequently accessed metadata files.
+    // Uses ConcurrentDictionary to avoid lock contention on concurrent chunk reads.
+    private readonly ConcurrentDictionary<string, byte[]?> _metadataCache = new();
 
     public string BaseUrl => _baseUrl;
 
     /// <summary>
-    /// Creates an HTTP Zarr store with a new HttpClient.
+    /// Creates an HTTP Zarr store with a new HttpClient configured for
+    /// high-throughput parallel chunk fetching.
     /// The HttpClient will be disposed when the store is disposed.
     /// </summary>
     public HttpZarrStore(string baseUrl)
-        : this(baseUrl, new HttpClient(), ownsHttpClient: true)
+        : this(baseUrl, CreateDefaultHttpClient(), ownsHttpClient: true)
     {
     }
 
     /// <summary>
     /// Creates an HTTP Zarr store with a provided HttpClient.
     /// The caller is responsible for disposing the HttpClient.
+    ///
+    /// For best performance with parallel chunk reads, configure the
+    /// underlying SocketsHttpHandler with MaxConnectionsPerServer >= 32.
     /// </summary>
     public HttpZarrStore(string baseUrl, HttpClient httpClient, bool ownsHttpClient = false)
     {
@@ -47,6 +59,22 @@ public sealed class HttpZarrStore : IZarrStore
             _httpClient.Timeout = TimeSpan.FromSeconds(300);  // 5 minutes for large chunks
     }
 
+    /// <summary>
+    /// Creates an HttpClient with a SocketsHttpHandler configured for
+    /// high-throughput parallel chunk fetching from object stores.
+    /// </summary>
+    private static HttpClient CreateDefaultHttpClient()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            MaxConnectionsPerServer = DefaultMaxConnectionsPerServer,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+            EnableMultipleHttp2Connections = true,
+        };
+
+        return new HttpClient(handler);
+    }
+
     // -------------------------------------------------------------------------
     // IZarrStore
     // -------------------------------------------------------------------------
@@ -56,19 +84,8 @@ public sealed class HttpZarrStore : IZarrStore
         ThrowIfDisposed();
 
         // Check cache for metadata files
-        if (IsMetadataKey(key))
-        {
-            await _cacheLock.WaitAsync(ct).ConfigureAwait(false);
-            try
-            {
-                if (_metadataCache.TryGetValue(key, out var cached))
-                    return cached;
-            }
-            finally
-            {
-                _cacheLock.Release();
-            }
-        }
+        if (IsMetadataKey(key) && _metadataCache.TryGetValue(key, out var cached))
+            return cached;
 
         var url = BuildUrl(key);
 
@@ -81,7 +98,7 @@ public sealed class HttpZarrStore : IZarrStore
             {
                 // Cache negative result for metadata
                 if (IsMetadataKey(key))
-                    await CacheMetadataAsync(key, null, ct).ConfigureAwait(false);
+                    _metadataCache[key] = null;
 
                 return null;
             }
@@ -92,7 +109,7 @@ public sealed class HttpZarrStore : IZarrStore
 
             // Cache metadata files
             if (IsMetadataKey(key))
-                await CacheMetadataAsync(key, data, ct).ConfigureAwait(false);
+                _metadataCache[key] = data;
 
             return data;
         }
@@ -127,19 +144,8 @@ public sealed class HttpZarrStore : IZarrStore
         ThrowIfDisposed();
 
         // Check cache first
-        if (IsMetadataKey(key))
-        {
-            await _cacheLock.WaitAsync(ct).ConfigureAwait(false);
-            try
-            {
-                if (_metadataCache.ContainsKey(key))
-                    return _metadataCache[key] is not null;
-            }
-            finally
-            {
-                _cacheLock.Release();
-            }
-        }
+        if (IsMetadataKey(key) && _metadataCache.TryGetValue(key, out var cached))
+            return cached is not null;
 
         var url = BuildUrl(key);
 
@@ -242,19 +248,6 @@ public sealed class HttpZarrStore : IZarrStore
             || key.EndsWith(".zmetadata", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task CacheMetadataAsync(string key, byte[]? data, CancellationToken ct)
-    {
-        await _cacheLock.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            _metadataCache[key] = data;
-        }
-        finally
-        {
-            _cacheLock.Release();
-        }
-    }
-
     // -------------------------------------------------------------------------
     // Disposal
     // -------------------------------------------------------------------------
@@ -268,8 +261,6 @@ public sealed class HttpZarrStore : IZarrStore
 
         if (_ownsHttpClient)
             _httpClient?.Dispose();
-
-        _cacheLock?.Dispose();
 
         return ValueTask.CompletedTask;
     }

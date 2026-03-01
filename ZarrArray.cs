@@ -1,3 +1,4 @@
+using System.Buffers;
 using OmeZarr.Core.Zarr.Codecs;
 using OmeZarr.Core.Zarr.Metadata;
 using OmeZarr.Core.Zarr.Store;
@@ -17,6 +18,10 @@ public sealed class ZarrArray
     private readonly string _arrayPath;   // store-relative path to the array root
     private readonly CodecPipeline _pipeline;
 
+    // Cached derived values — avoid repeated LINQ allocations in hot paths
+    private readonly long[] _chunkShapeLong;
+    private readonly long   _chunkElementCount;
+
     public ZarrArrayMetadata Metadata { get; }
 
     internal ZarrArray(IZarrStore store, string arrayPath, ZarrArrayMetadata metadata)
@@ -25,6 +30,9 @@ public sealed class ZarrArray
         _arrayPath = arrayPath.TrimEnd('/');
         Metadata = metadata;
         _pipeline = CodecFactory.BuildPipeline(metadata);
+
+        _chunkShapeLong = metadata.ChunkShape.Select(s => (long)s).ToArray();
+        _chunkElementCount = metadata.ChunkShape.Aggregate(1L, (acc, s) => acc * s);
     }
 
     // -------------------------------------------------------------------------
@@ -145,8 +153,7 @@ public sealed class ZarrArray
         var decoded = await _pipeline.DecodeAsync(bytes, ct).ConfigureAwait(false);
 
         // Validate decoded size - must match expected chunk size
-        var expectedElements = Metadata.ChunkShape.Aggregate(1L, (acc, s) => acc * s);
-        var expectedBytes = expectedElements * Metadata.DataType.ElementSize;
+        var expectedBytes = _chunkElementCount * Metadata.DataType.ElementSize;
         var actualBytes = decoded.Length;
 
         if (actualBytes != expectedBytes)
@@ -163,13 +170,12 @@ public sealed class ZarrArray
             {
                 int elementSize = Metadata.DataType.ElementSize;
                 var padded = BuildFillValueChunk();
-                var fullChunkShape = Metadata.ChunkShape.Select(s => (long)s).ToArray();
                 var truncatedShape = ComputeTruncatedChunkShape(chunkCoord);
 
                 var expectedTruncatedBytes = ComputeTotalElements(truncatedShape) * elementSize;
 
                 if (actualBytes == (int)expectedTruncatedBytes)
-                    ExpandTruncatedChunk(decoded, truncatedShape, padded, fullChunkShape, elementSize);
+                    ExpandTruncatedChunk(decoded, truncatedShape, padded, _chunkShapeLong, elementSize);
                 else
                     Array.Copy(decoded, 0, padded, 0, decoded.Length);  // unknown truncation — best effort
 
@@ -180,17 +186,6 @@ public sealed class ZarrArray
                 $"Decoded chunk at {string.Join(",", chunkCoord)} has {actualBytes} bytes, " +
                 $"expected {expectedBytes} bytes. Chunk shape: [{string.Join(", ", Metadata.ChunkShape)}], " +
                 $"element size: {Metadata.DataType.ElementSize} bytes.");
-        }
-
-        // DIAGNOSTIC: Check if decoded data is all zeros
-        var hasNonZero = decoded.Any(b => b != 0);
-        if (!hasNonZero)
-        {
-            // This might be legitimate (empty chunk) or a decoding issue
-            // Log the raw encoded size for debugging
-            System.Diagnostics.Debug.WriteLine(
-                $"Warning: Chunk [{string.Join(",", chunkCoord)}] decoded to all zeros. " +
-                $"Raw size: {bytes.Length} bytes, decoded size: {decoded.Length} bytes.");
         }
 
         return decoded;
@@ -215,31 +210,35 @@ public sealed class ZarrArray
     {
         var chunkData = await ReadChunkAsync(chunkCoord, ct).ConfigureAwait(false);
         var chunkOrigin = ComputeChunkOrigin(chunkCoord);
-        var chunkShape = Metadata.ChunkShape.Select(s => (long)s).ToArray();
-        var clampedStart = ClampToChunk(regionStart, chunkOrigin, chunkShape, clampToStart: true);
-        var clampedEnd = ClampToChunk(regionEnd, chunkOrigin, chunkShape, clampToStart: false);
+        var clampedStart = ClampToChunk(regionStart, chunkOrigin, _chunkShapeLong, clampToStart: true);
+        var clampedEnd = ClampToChunk(regionEnd, chunkOrigin, _chunkShapeLong, clampToStart: false);
 
-        CopySourceRegionToChunk(
-            chunkOrigin,
-            chunkShape,
-            clampedStart,
-            clampedEnd,
-            regionStart,
-            regionShape,
-            sourceData,
-            chunkData,
-            elementSize);
+        CopyNdRegion(
+            src: sourceData,
+            srcOrigin: regionStart,
+            srcShape: regionShape,
+            dst: chunkData,
+            dstOrigin: chunkOrigin,
+            dstShape: _chunkShapeLong,
+            copyStart: clampedStart,
+            copyEnd: clampedEnd,
+            elementSize: elementSize);
 
         await WriteChunkAsync(chunkCoord, chunkData, ct).ConfigureAwait(false);
     }
 
     // -------------------------------------------------------------------------
-    // Region/chunk copy helpers
+    // Region/chunk copy — row-contiguous fast path
     // -------------------------------------------------------------------------
 
     /// <summary>
     /// Copies the relevant portion of a decoded chunk into the output buffer
     /// at the correct offset for the requested region.
+    ///
+    /// Uses a row-contiguous fast path: the innermost (last) axis is copied
+    /// with a single Buffer.BlockCopy per row rather than element-by-element.
+    /// The outer axes are iterated with a reusable coordinate array to avoid
+    /// per-element heap allocations.
     /// </summary>
     private void CopyChunkRegionToOutput(
         long[] chunkCoord,
@@ -250,78 +249,126 @@ public sealed class ZarrArray
         byte[] outputBuffer,
         int elementSize)
     {
-        var rank = Metadata.Rank;
         var chunkOrigin = ComputeChunkOrigin(chunkCoord);
-        var chunkShape = Metadata.ChunkShape.Select(s => (long)s).ToArray();
 
-        // The range within the array that this chunk covers, clipped to our region
+        var rank = Metadata.Rank;
         var copyStart = new long[rank];
         var copyEnd = new long[rank];
 
         for (int d = 0; d < rank; d++)
         {
             copyStart[d] = Math.Max(regionStart[d], chunkOrigin[d]);
-            copyEnd[d] = Math.Min(regionEnd[d], chunkOrigin[d] + chunkShape[d]);
+            copyEnd[d] = Math.Min(regionEnd[d], chunkOrigin[d] + _chunkShapeLong[d]);
         }
 
-        // Iterate over all elements in the copy range
-        IterateNdRegion(copyStart, copyEnd, rank, indices =>
-        {
-            var chunkOffset = ComputeFlatIndex(SubtractArrays(indices, chunkOrigin), chunkShape);
-            var outputOffset = ComputeFlatIndex(SubtractArrays(indices, regionStart), regionShape);
-
-            var chunkByteOffset = (int)(chunkOffset * elementSize);
-            var outputByteOffset = (int)(outputOffset * elementSize);
-
-            // Bounds check before copy
-            if (chunkByteOffset + elementSize > chunkData.Length)
-            {
-                throw new InvalidOperationException(
-                    $"Chunk bounds exceeded: trying to read at byte offset {chunkByteOffset} " +
-                    $"(element {chunkOffset}) from chunk with {chunkData.Length} bytes " +
-                    $"({chunkData.Length / elementSize} elements). " +
-                    $"Chunk shape: [{string.Join(", ", chunkShape)}], element size: {elementSize}.");
-            }
-
-            if (outputByteOffset + elementSize > outputBuffer.Length)
-            {
-                throw new InvalidOperationException(
-                    $"Output bounds exceeded: trying to write at byte offset {outputByteOffset} " +
-                    $"(element {outputOffset}) to buffer with {outputBuffer.Length} bytes " +
-                    $"({outputBuffer.Length / elementSize} elements). " +
-                    $"Region shape: [{string.Join(", ", regionShape)}], element size: {elementSize}.");
-            }
-
-            Buffer.BlockCopy(
-                chunkData, chunkByteOffset,
-                outputBuffer, outputByteOffset,
-                elementSize);
-        });
+        CopyNdRegion(
+            src: chunkData,
+            srcOrigin: chunkOrigin,
+            srcShape: _chunkShapeLong,
+            dst: outputBuffer,
+            dstOrigin: regionStart,
+            dstShape: regionShape,
+            copyStart: copyStart,
+            copyEnd: copyEnd,
+            elementSize: elementSize);
     }
 
-    private void CopySourceRegionToChunk(
-        long[] chunkOrigin,
-        long[] chunkShape,
-        long[] clampedStart,
-        long[] clampedEnd,
-        long[] regionStart,
-        long[] regionShape,
-        byte[] sourceData,
-        byte[] chunkData,
+    /// <summary>
+    /// General-purpose N-dimensional copy between two C-order flat buffers.
+    /// Copies the region [copyStart, copyEnd) from src into dst, where each
+    /// buffer has its own origin and shape.
+    ///
+    /// The innermost axis is copied as a contiguous row with a single
+    /// Buffer.BlockCopy call. Outer axes are iterated with a single reusable
+    /// coordinate array — no per-element heap allocations.
+    /// </summary>
+    private static void CopyNdRegion(
+        byte[] src,
+        long[] srcOrigin,
+        long[] srcShape,
+        byte[] dst,
+        long[] dstOrigin,
+        long[] dstShape,
+        long[] copyStart,
+        long[] copyEnd,
         int elementSize)
     {
-        var rank = Metadata.Rank;
+        var rank = srcShape.Length;
 
-        IterateNdRegion(clampedStart, clampedEnd, rank, indices =>
+        // How many elements to copy along the innermost axis per row
+        var innerCount = copyEnd[rank - 1] - copyStart[rank - 1];
+        var rowBytes = (int)(innerCount * elementSize);
+
+        if (rowBytes <= 0)
+            return;
+
+        // Pre-compute strides for src and dst (C-order: last axis has stride 1)
+        var srcStrides = ComputeStrides(srcShape);
+        var dstStrides = ComputeStrides(dstShape);
+
+        // For rank-1 arrays, just do one copy
+        if (rank == 1)
         {
-            var chunkOffset = ComputeFlatIndex(SubtractArrays(indices, chunkOrigin), chunkShape);
-            var sourceOffset = ComputeFlatIndex(SubtractArrays(indices, regionStart), regionShape);
+            var srcByteOffset = (int)((copyStart[0] - srcOrigin[0]) * srcStrides[0] * elementSize);
+            var dstByteOffset = (int)((copyStart[0] - dstOrigin[0]) * dstStrides[0] * elementSize);
+            Buffer.BlockCopy(src, srcByteOffset, dst, dstByteOffset, rowBytes);
+            return;
+        }
 
-            Buffer.BlockCopy(
-                sourceData, (int)(sourceOffset * elementSize),
-                chunkData, (int)(chunkOffset * elementSize),
-                elementSize);
-        });
+        // Iterate outer axes [0..rank-2], copy full inner row each time.
+        // Uses a single reusable coordinate array — no per-iteration allocations.
+        var outerRank = rank - 1;
+        var current = new long[outerRank];
+        for (int d = 0; d < outerRank; d++)
+            current[d] = copyStart[d];
+
+        while (true)
+        {
+            // Compute flat byte offsets for the start of this row in src and dst
+            long srcElement = (copyStart[rank - 1] - srcOrigin[rank - 1]);
+            long dstElement = (copyStart[rank - 1] - dstOrigin[rank - 1]);
+
+            for (int d = 0; d < outerRank; d++)
+            {
+                srcElement += (current[d] - srcOrigin[d]) * srcStrides[d];
+                dstElement += (current[d] - dstOrigin[d]) * dstStrides[d];
+            }
+
+            var srcByteOffset = (int)(srcElement * elementSize);
+            var dstByteOffset = (int)(dstElement * elementSize);
+
+            Buffer.BlockCopy(src, srcByteOffset, dst, dstByteOffset, rowBytes);
+
+            // Advance outer coordinates (last outer axis first, C order)
+            int axis = outerRank - 1;
+            while (axis >= 0)
+            {
+                current[axis]++;
+                if (current[axis] < copyEnd[axis])
+                    break;
+                current[axis] = copyStart[axis];
+                axis--;
+            }
+
+            if (axis < 0)
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Computes C-order strides for a given shape.
+    /// stride[d] = product of shape[d+1..rank-1].  stride[rank-1] = 1.
+    /// </summary>
+    private static long[] ComputeStrides(long[] shape)
+    {
+        var rank = shape.Length;
+        var strides = new long[rank];
+        strides[rank - 1] = 1;
+
+        for (int d = rank - 2; d >= 0; d--)
+            strides[d] = strides[d + 1] * shape[d + 1];
+
+        return strides;
     }
 
     // -------------------------------------------------------------------------
@@ -375,8 +422,7 @@ public sealed class ZarrArray
 
     private byte[] BuildFillValueChunk()
     {
-        var chunkElements = Metadata.ChunkShape.Aggregate(1L, (acc, s) => acc * s);
-        return new byte[chunkElements * Metadata.DataType.ElementSize];
+        return new byte[_chunkElementCount * Metadata.DataType.ElementSize];
         // Fill value of 0 is used — a more complete implementation would
         // deserialise the fill_value from ZarrJsonDocument and populate here.
     }
@@ -418,6 +464,9 @@ public sealed class ZarrArray
     /// This is necessary when a Zarr implementation stores edge chunks without
     /// fill-value padding — the decoded rows are narrower than a full chunk row,
     /// so a flat copy would produce wrong strides starting from the second row.
+    ///
+    /// Uses the same row-contiguous fast path as CopyNdRegion: copies full rows
+    /// along the innermost axis rather than element-by-element.
     /// </summary>
     private static void ExpandTruncatedChunk(
         byte[] src,
@@ -429,13 +478,20 @@ public sealed class ZarrArray
         var rank = srcShape.Length;
         var start = new long[rank];
 
-        IterateNdRegion(start, srcShape, rank, indices =>
-        {
-            var srcByteOffset = (int)(ComputeFlatIndex(indices, srcShape) * elementSize);
-            var dstByteOffset = (int)(ComputeFlatIndex(indices, dstShape) * elementSize);
+        // src covers [0, srcShape) and dst covers [0, dstShape).
+        // Both origins are zero, so we can use CopyNdRegion directly.
+        var zeroOrigin = new long[rank];
 
-            Buffer.BlockCopy(src, srcByteOffset, dst, dstByteOffset, elementSize);
-        });
+        CopyNdRegion(
+            src: src,
+            srcOrigin: zeroOrigin,
+            srcShape: srcShape,
+            dst: dst,
+            dstOrigin: zeroOrigin,
+            dstShape: dstShape,
+            copyStart: zeroOrigin,
+            copyEnd: srcShape,
+            elementSize: elementSize);
     }
 
     private static long[] ClampToChunk(
@@ -479,28 +535,10 @@ public sealed class ZarrArray
     private static long ComputeTotalElements(long[] shape)
         => shape.Aggregate(1L, (acc, s) => acc * s);
 
-    private static long[] SubtractArrays(long[] a, long[] b)
-    {
-        var result = new long[a.Length];
-        for (int i = 0; i < a.Length; i++)
-            result[i] = a[i] - b[i];
-        return result;
-    }
-
     // -------------------------------------------------------------------------
     // N-dimensional iteration helpers
     // All iteration uses exclusive end: [start, end)
     // -------------------------------------------------------------------------
-
-    private static void IterateNdRegion(
-        long[] start,
-        long[] end,
-        int rank,
-        Action<long[]> body)
-    {
-        foreach (var coord in IterateNdCoordinates(start, end, rank))
-            body(coord);
-    }
 
     private static IEnumerable<long[]> IterateNdCoordinates(
         long[] start,
