@@ -422,7 +422,7 @@ for (int y = 0; y < height; y += tileSize)
 - [ ] AWS S3 native SDK integration (ListObjects, credentials)
 - [ ] Sharded Zarr v3 support
 - [ ] OME-Zarr writer API for creating new datasets
-- [ ] Parallel chunk reading for improved performance
+- [x] Parallel chunk reading for improved performance
 - [ ] Zarr v2 → v3 conversion utilities
 - [ ] NGFF transformations support (rotation, affine)
 - [ ] Consolidated metadata (.zmetadata) support for HTTP stores
