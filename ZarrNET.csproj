@@ -7,8 +7,17 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>ZarrNET</RootNamespace>
     <AssemblyName>ZarrNET</AssemblyName>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-	  <Version>0.1.0</Version>
+	<Description>A Zarr reader and writer in .NET</Description>
+	<PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
+	<PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
+	<PackageProjectUrl>https://biologytools.github.io/</PackageProjectUrl>
+	<PackageTags>Biology; Microscopy; Whole-Slide-Image;</PackageTags>
+	<PackageReleaseNotes>First release of Zarr.NET.</PackageReleaseNotes>
+	<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+	<Authors>Erik Repo</Authors>
+	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+	<Version>0.1.0</Version>
+	<PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="AForgeBio" Version="2.5.0" />
