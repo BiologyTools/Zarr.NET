@@ -18,11 +18,11 @@ A high-performance, fully async C# library for reading and writing OME-Zarr data
 
 ```bash
 # Via NuGet (when published)
-dotnet add package OmeZarr.Core
+dotnet add package ZarrNET
 
 # Or clone and build locally
-git clone https://github.com/yourusername/OmeZarr.NET.git
-cd OmeZarr.NET
+git clone https://github.com/yBiologyTools/ZarrNET.git
+cd ZarrNET
 dotnet build
 ```
 
@@ -31,14 +31,15 @@ dotnet build
 - .NET 10.0 or higher
 - ZstdSharp.Port (managed zstd implementation)
 - System.Text.Json (included in .NET 8.0)
+- AForgeBio
 
 ## Quick Start
 
 ### Read a single 2D plane from a multiscale image
 
 ```csharp
-using OmeZarr.Core.OmeZarr;
-using OmeZarr.Core.OmeZarr.Helpers;
+using ZarrNET;
+using ZarrNET.Helpers;
 
 await using var reader = await OmeZarrReader.OpenAsync("/path/to/dataset.zarr");
 var image = reader.AsMultiscaleImage();
@@ -58,7 +59,7 @@ byte[] bytes = plane.ToBytes<ushort>(PixelFormat.Gray8);
 ### Read using physical coordinates (ROI in microns)
 
 ```csharp
-using OmeZarr.Core.OmeZarr.Coordinates;
+using ZarrNET.Coordinates;
 
 // Define ROI: 100µm x 100µm region at specific location
 var roi = new PhysicalROI(
@@ -422,7 +423,7 @@ for (int y = 0; y < height; y += tileSize)
 - [ ] AWS S3 native SDK integration (ListObjects, credentials)
 - [ ] Sharded Zarr v3 support
 - [ ] OME-Zarr writer API for creating new datasets
-- [ ] Parallel chunk reading for improved performance
+- [x] Parallel chunk reading for improved performance
 - [ ] Zarr v2 → v3 conversion utilities
 - [ ] NGFF transformations support (rotation, affine)
 - [ ] Consolidated metadata (.zmetadata) support for HTTP stores
