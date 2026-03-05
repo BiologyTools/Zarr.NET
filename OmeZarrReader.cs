@@ -30,6 +30,7 @@ public sealed class OmeZarrReader : IAsyncDisposable
     private readonly IZarrStore  _store;
     private readonly ZarrGroup   _rootGroup;
     private readonly System.Text.Json.JsonElement? _omeGroupAttributes;  // only for bioformats2raw
+    private readonly Metadata.OmeXmlMetadata?      _omeXml;              // only for bioformats2raw
     private bool                 _disposed;
 
     public OmeAttributesParser.OmeNodeType RootNodeType { get; }
@@ -47,13 +48,15 @@ public sealed class OmeZarrReader : IAsyncDisposable
         ZarrGroup   rootGroup,
         OmeAttributesParser.OmeNodeType rootNodeType,
         string?     ngffVersion,
-        System.Text.Json.JsonElement? omeGroupAttributes = null)
+        System.Text.Json.JsonElement? omeGroupAttributes = null,
+        Metadata.OmeXmlMetadata?      omeXml = null)
     {
         _store                = store;
         _rootGroup            = rootGroup;
         RootNodeType          = rootNodeType;
         NgffVersion           = ngffVersion;
         _omeGroupAttributes   = omeGroupAttributes;
+        _omeXml               = omeXml;
     }
 
     // -------------------------------------------------------------------------
@@ -83,15 +86,18 @@ public sealed class OmeZarrReader : IAsyncDisposable
             var ngffVersion = OmeAttributesParser.DetectNgffVersion(attributes);
 
             // For bioformats2raw layouts, pre-load the OME sub-group attributes
-            // so the collection metadata (series list) is ready at construction time
+            // and METADATA.ome.xml so the collection metadata is ready at construction time
             System.Text.Json.JsonElement? omeGroupAttributes = null;
+            Metadata.OmeXmlMetadata?      omeXml = null;
+
             if (nodeType == OmeAttributesParser.OmeNodeType.Bioformats2RawCollection)
             {
-                omeGroupAttributes = await TryReadOmeGroupAttributesAsync(
-                    rootGroup, ct).ConfigureAwait(false);
+                (omeGroupAttributes, omeXml) = await ReadBioformats2RawOmeDataAsync(
+                    store, rootGroup, ct).ConfigureAwait(false);
             }
+
             return new OmeZarrReader(store, rootGroup, nodeType, ngffVersion,
-                    omeGroupAttributes);
+                    omeGroupAttributes, omeXml);
         }
         catch
         {
@@ -114,14 +120,16 @@ public sealed class OmeZarrReader : IAsyncDisposable
         var ngffVersion = OmeAttributesParser.DetectNgffVersion(attributes);
 
         System.Text.Json.JsonElement? omeGroupAttributes = null;
+        Metadata.OmeXmlMetadata?      omeXml = null;
+
         if (nodeType == OmeAttributesParser.OmeNodeType.Bioformats2RawCollection)
         {
-            omeGroupAttributes = await TryReadOmeGroupAttributesAsync(
-                rootGroup, ct).ConfigureAwait(false);
+            (omeGroupAttributes, omeXml) = await ReadBioformats2RawOmeDataAsync(
+                store, rootGroup, ct).ConfigureAwait(false);
         }
 
         return new OmeZarrReader(store, rootGroup, nodeType, ngffVersion,
-            omeGroupAttributes);
+            omeGroupAttributes, omeXml);
     }
 
     // -------------------------------------------------------------------------
@@ -203,7 +211,7 @@ public sealed class OmeZarrReader : IAsyncDisposable
             nameof(AsBioformats2RawCollection));
 
         var attributes = RequireAttributes();
-        var meta = OmeAttributesParser.ParseBioformats2Raw(attributes, _omeGroupAttributes);
+        var meta = OmeAttributesParser.ParseBioformats2Raw(attributes, _omeGroupAttributes, _omeXml);
 
         return new Bioformats2RawCollectionNode(_rootGroup, meta);
     }
@@ -269,7 +277,7 @@ public sealed class OmeZarrReader : IAsyncDisposable
                 new Bioformats2RawCollectionNode(
                     _rootGroup,
                     OmeAttributesParser.ParseBioformats2Raw(
-                        attributes!.Value, _omeGroupAttributes)),
+                        attributes!.Value, _omeGroupAttributes, _omeXml)),
 
             _ => throw new InvalidOperationException(
                 $"Cannot determine OME-Zarr node type. " +
@@ -283,22 +291,62 @@ public sealed class OmeZarrReader : IAsyncDisposable
     // Helpers
     // -------------------------------------------------------------------------
 
-    private static async Task<System.Text.Json.JsonElement?> TryReadOmeGroupAttributesAsync(
-        ZarrGroup         rootGroup,
-        CancellationToken ct)
+    /// <summary>
+    /// Reads both the OME sub-group attributes (for the series list) and
+    /// METADATA.ome.xml (for rich image metadata) in one pass.
+    ///
+    /// Both are optional per the spec. Failures reading either one do not
+    /// prevent the other from being returned — they degrade independently.
+    /// </summary>
+    private static async Task<(System.Text.Json.JsonElement? OmeGroupAttributes, Metadata.OmeXmlMetadata? OmeXml)>
+        ReadBioformats2RawOmeDataAsync(
+            IZarrStore        store,
+            ZarrGroup         rootGroup,
+            CancellationToken ct)
     {
+        System.Text.Json.JsonElement? omeGroupAttributes = null;
+        Metadata.OmeXmlMetadata?      omeXml = null;
+
+        // Check for the OME sub-group
+        bool hasOmeGroup;
         try
         {
-            if (!await rootGroup.HasChildAsync("OME", ct).ConfigureAwait(false))
-                return null;
-
-            var omeGroup = await rootGroup.OpenGroupAsync("OME", ct).ConfigureAwait(false);
-            return omeGroup.Metadata.RawAttributes;
+            hasOmeGroup = await rootGroup.HasChildAsync("OME", ct).ConfigureAwait(false);
         }
         catch
         {
-            return null;  // OME sub-group is optional per spec
+            return (null, null);
         }
+
+        if (!hasOmeGroup)
+            return (null, null);
+
+        // Read OME sub-group attributes (series list)
+        try
+        {
+            var omeGroup = await rootGroup.OpenGroupAsync("OME", ct).ConfigureAwait(false);
+            omeGroupAttributes = omeGroup.Metadata.RawAttributes;
+        }
+        catch
+        {
+            // OME sub-group attributes are optional — degrade gracefully
+        }
+
+        // Read METADATA.ome.xml from the store
+        try
+        {
+            var xmlBytes = await store.ReadAsync("OME/METADATA.ome.xml", ct).ConfigureAwait(false);
+            if (xmlBytes is not null)
+            {
+                omeXml = Metadata.OmeXmlParser.TryParse(xmlBytes);
+            }
+        }
+        catch
+        {
+            // METADATA.ome.xml is optional — degrade gracefully
+        }
+
+        return (omeGroupAttributes, omeXml);
     }
 
     private void EnsureNodeType(OmeAttributesParser.OmeNodeType expected, string callerName)

@@ -133,6 +133,14 @@ public sealed class Bioformats2RawMetadata
     /// in which case series are discovered by probing consecutive numbered groups.
     /// </summary>
     public string[]? SeriesPaths   { get; init; }
+
+    /// <summary>
+    /// Rich metadata parsed from OME/METADATA.ome.xml, if present.
+    /// Contains series names, channel info, physical sizes, and instrument
+    /// details that are not available from the Zarr attributes alone.
+    /// Null if the file is absent or could not be parsed.
+    /// </summary>
+    public OmeXmlMetadata? OmeXml  { get; init; }
 }
 
 // =============================================================================

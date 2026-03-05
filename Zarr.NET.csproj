@@ -12,13 +12,21 @@
 	<PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
 	<PackageProjectUrl>https://biologytools.github.io/</PackageProjectUrl>
 	<PackageTags>Biology; Microscopy; Whole-Slide-Image; Zarr; OME-Zarr; NGFF;</PackageTags>
-	<PackageReleaseNotes>Removed dependency AForge.</PackageReleaseNotes>
+	<PackageReleaseNotes>Added support for bioformats2raw layout.</PackageReleaseNotes>
 	<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 	<Authors>Erik Repo</Authors>
 	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-	<Version>0.1.1</Version>
+	<Version>0.2.0</Version>
 	<PackageReadmeFile>README.md</PackageReadmeFile>
+	<PackageIcon>icon.png</PackageIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\icon.png">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="K4os.Compression.LZ4" Version="1.3.8" />
     <PackageReference Include="ZstdSharp.Port" Version="0.8.7" />

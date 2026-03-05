@@ -319,11 +319,20 @@ public sealed class LabelNode : OmeZarrNode
 /// Analogous to a PlateNode — it's a container you navigate into.
 ///
 /// The series are typically numbered sub-groups (0, 1, 2, ...).
-/// If the OME sub-group provides explicit series paths, those are used;
-/// otherwise series are discovered by probing consecutive numbered groups.
+/// Series count and paths are resolved from three sources in priority order:
+///   1. Explicit "series" attribute in OME/.zattrs
+///   2. Image count from METADATA.ome.xml
+///   3. Bounded probing of consecutive numbered sub-groups
 /// </summary>
 public sealed class Bioformats2RawCollectionNode : OmeZarrNode
 {
+    /// <summary>
+    /// Default maximum number of sub-groups to probe when discovering series
+    /// by sequential numbered groups. Prevents unbounded HTTP requests against
+    /// stores that don't have an explicit series list.
+    /// </summary>
+    public const int DefaultMaxProbe = 1000;
+
     public Bioformats2RawMetadata CollectionMetadata { get; }
 
     internal Bioformats2RawCollectionNode(
@@ -336,8 +345,17 @@ public sealed class Bioformats2RawCollectionNode : OmeZarrNode
 
     /// <summary>
     /// Number of known image series, or null if discovery is required.
+    /// Prefers the explicit series list; falls back to the OME-XML image count.
     /// </summary>
-    public int? SeriesCount => CollectionMetadata.SeriesPaths?.Length;
+    public int? SeriesCount =>
+        CollectionMetadata.SeriesPaths?.Length
+        ?? CollectionMetadata.OmeXml?.ImageCount;
+
+    /// <summary>
+    /// Rich OME-XML metadata for all series, if METADATA.ome.xml was present.
+    /// Null if the file was absent or could not be parsed.
+    /// </summary>
+    public OmeXmlMetadata? OmeXml => CollectionMetadata.OmeXml;
 
     // -------------------------------------------------------------------------
     // Series navigation
@@ -364,17 +382,59 @@ public sealed class Bioformats2RawCollectionNode : OmeZarrNode
     }
 
     /// <summary>
-    /// Discovers all available series paths. Uses the OME series list if
-    /// available, otherwise probes numbered sub-groups (0, 1, 2, ...).
+    /// Returns the OME-XML metadata for a specific series, if available.
+    /// The index corresponds to the series position in the bioformats2raw layout.
+    /// Returns null if METADATA.ome.xml was not present or the index is out of range.
+    /// </summary>
+    public OmeXmlImageMetadata? GetSeriesOmeXml(int seriesIndex)
+    {
+        var omeXml = CollectionMetadata.OmeXml;
+        if (omeXml is null) return null;
+        if (seriesIndex < 0 || seriesIndex >= omeXml.Images.Length) return null;
+
+        return omeXml.Images[seriesIndex];
+    }
+
+    /// <summary>
+    /// Discovers all available series paths. Resolution order:
+    ///   1. Explicit "series" attribute from OME/.zattrs (authoritative)
+    ///   2. Image count from METADATA.ome.xml (generates "0", "1", ... "N-1")
+    ///   3. Bounded probing of consecutive numbered sub-groups
+    /// </summary>
+    public Task<IReadOnlyList<string>> DiscoverSeriesPathsAsync(
+        CancellationToken ct = default)
+        => DiscoverSeriesPathsAsync(DefaultMaxProbe, ct);
+
+    /// <summary>
+    /// Discovers all available series paths with a configurable probe limit.
+    ///
+    /// The <paramref name="maxProbe"/> parameter caps the sequential probing
+    /// fallback to prevent unbounded I/O against slow or remote stores.
+    /// Only used when neither OME/.zattrs nor METADATA.ome.xml provide
+    /// the series count.
     /// </summary>
     public async Task<IReadOnlyList<string>> DiscoverSeriesPathsAsync(
-        CancellationToken ct = default)
+        int               maxProbe,
+        CancellationToken ct)
     {
+        // 1. Explicit series list from OME/.zattrs
         if (CollectionMetadata.SeriesPaths is not null)
             return CollectionMetadata.SeriesPaths;
 
-        var paths = new List<string>();
-        for (int i = 0; ; i++)
+        // 2. Image count from METADATA.ome.xml — generate paths without I/O
+        var omeXml = CollectionMetadata.OmeXml;
+        if (omeXml is not null && omeXml.ImageCount > 0)
+        {
+            return Enumerable.Range(0, omeXml.ImageCount)
+                .Select(i => i.ToString())
+                .ToArray();
+        }
+
+        // 3. Bounded sequential probing (last resort)
+        var paths    = new List<string>();
+        var probeMax = Math.Max(0, maxProbe);
+
+        for (int i = 0; i < probeMax; i++)
         {
             if (!await Group.HasChildAsync(i.ToString(), ct).ConfigureAwait(false))
                 break;

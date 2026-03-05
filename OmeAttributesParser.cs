@@ -187,8 +187,9 @@ public static class OmeAttributesParser
     /// optionally the OME sub-group attributes (which carry the series list).
     /// </summary>
     public static Bioformats2RawMetadata ParseBioformats2Raw(
-        JsonElement  rootAttributes,
-        JsonElement? omeGroupAttributes)
+        JsonElement      rootAttributes,
+        JsonElement?     omeGroupAttributes,
+        OmeXmlMetadata?  omeXml = null)
     {
         var resolved = ResolveOmeAttributes(rootAttributes);
 
@@ -216,7 +217,8 @@ public static class OmeAttributesParser
         return new Bioformats2RawMetadata
         {
             LayoutVersion = layoutVersion,
-            SeriesPaths   = seriesPaths
+            SeriesPaths   = seriesPaths,
+            OmeXml        = omeXml
         };
     }
 
