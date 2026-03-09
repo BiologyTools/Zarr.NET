@@ -31,7 +31,7 @@ dotnet build
 - .NET 10.0 or higher
 - ZstdSharp.Port (managed zstd implementation)
 - System.Text.Json (included in .NET 8.0)
-- AForgeBio
+- AWS SDK S3 (for S3 zarr files)
 
 ## Quick Start
 
