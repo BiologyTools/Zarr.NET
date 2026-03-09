@@ -420,7 +420,7 @@ for (int y = 0; y < height; y += tileSize)
 
 - [x] HTTP/S3 remote store support
 - [x] Blosc codec support
-- [ ] AWS S3 native SDK integration (ListObjects, credentials)
+- [x] AWS S3 native SDK integration (ListObjects, credentials)
 - [x] Sharded Zarr v3 support
 - [ ] OME-Zarr writer API for creating new datasets
 - [x] Parallel chunk reading for improved performance
