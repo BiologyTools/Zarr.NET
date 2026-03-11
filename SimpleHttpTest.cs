@@ -1,4 +1,4 @@
-using OmeZarr.Core.OmeZarr.Helpers;
+using ZarrNET.Core.Helpers;
 using ZarrNET;
 using ZarrNET.Core;
 using ZarrNET.Core.OmeZarr;

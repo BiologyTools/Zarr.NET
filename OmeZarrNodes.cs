@@ -1,11 +1,10 @@
-using OmeZarr.Core.OmeZarr;
-using OmeZarr.Core;
+using ZarrNET.Core;
 using ZarrNET.Core.Zarr;
 using ZarrNET.Core.OmeZarr.Metadata;
 using ZarrNET.Core.OmeZarr.Nodes;
 using ZarrNET.Core.OmeZarr.Coordinates;
 
-namespace OmeZarr.Core.OmeZarr.Nodes;
+namespace ZarrNET.Core.Nodes;
 
 // =============================================================================
 // Base node

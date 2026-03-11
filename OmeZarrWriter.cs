@@ -1,12 +1,12 @@
 using System.Text;
 using System.Text.Json;
-using OmeZarr.Core.OmeZarr;
+using ZarrNET.Core;
 using ZarrNET;
 using ZarrNET.Core;
 using ZarrNET.Core.Zarr;
 using ZarrNET.Core.Zarr.Store;
 
-namespace OmeZarr.Core.OmeZarr;
+namespace ZarrNET.Core;
 
 // =============================================================================
 // Image descriptor — caller fills this in before handing off to the writer

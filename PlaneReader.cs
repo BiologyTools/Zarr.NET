@@ -1,8 +1,8 @@
-using OmeZarr.Core.OmeZarr.Nodes;
+using ZarrNET.Core.Nodes;
 using ZarrNET.Core.OmeZarr.Coordinates;
 using ZarrNET.Core.OmeZarr.Nodes;
 
-namespace OmeZarr.Core.OmeZarr.Helpers;
+namespace ZarrNET.Core.Helpers;
 
 /// <summary>
 /// Extension methods for common OME-Zarr plane extraction operations.

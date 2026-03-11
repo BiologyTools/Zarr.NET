@@ -1,4 +1,4 @@
-using OmeZarr.Core.OmeZarr.Nodes;
+using ZarrNET.Core.Nodes;
 using ZarrNET.Core.OmeZarr;
 using ZarrNET.Core.OmeZarr.Metadata;
 using ZarrNET.Core.OmeZarr.Nodes;

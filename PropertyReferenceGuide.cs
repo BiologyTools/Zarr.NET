@@ -6,9 +6,9 @@ using ZarrNET;
 using ZarrNET.Core.OmeZarr;
 using ZarrNET.Core.OmeZarr.Coordinates;
 using ZarrNET.Core.OmeZarr.Metadata;
-using OmeZarr.Core.OmeZarr.Nodes;
+using ZarrNET.Core.Nodes;
 using ZarrNET.Core;
-using OmeZarr.Core.OmeZarr.Helpers;
+using ZarrNET.Core.Helpers;
 namespace ZarrNET
 {
     public class PropertyReferanceGuide()
@@ -56,7 +56,7 @@ namespace ZarrNET
             // Extract data:
             ushort[,] pixels2D = plane.As2DArray<ushort>();
             ushort[] pixels1D = plane.As1DArray<ushort>();
-            byte[] bytes = plane.ToBytes<ushort>(OmeZarr.Core.OmeZarr.Helpers.PixelFormat.Gray8);
+            byte[] bytes = plane.ToBytes<ushort>(ZarrNET.Core.Helpers.PixelFormat.Gray8);
 
             // =============================================================================
             // RegionResult - Multi-dimensional region (may not be 2D)
