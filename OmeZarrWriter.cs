@@ -1,4 +1,4 @@
-using System.Text;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using ZarrNET.Core;
 using ZarrNET;
@@ -15,69 +15,56 @@ namespace ZarrNET.Core;
 /// <summary>
 /// Everything the writer needs to know about a 5D image being saved.
 /// Shape is always interpreted as (T, C, Z, Y, X) in this descriptor.
-/// The caller converts from their internal BioImage representation into this.
 /// All dimension sizes must be at least 1.
 /// </summary>
 public class BioImageDescriptor
 {
-    public string  Name         { get; init; } = "image";
-    public string  DataType     { get; init; } = "uint16";   // Zarr v3 data_type string
+    public string Name     { get; init; } = "image";
+    public string DataType { get; init; } = "uint16";
 
-    public int     SizeT        { get; }
-    public int     SizeC        { get; }
-    public int     SizeZ        { get; }
-    public int     SizeY        { get; }
-    public int     SizeX        { get; }
+    public int SizeT { get; }
+    public int SizeC { get; }
+    public int SizeZ { get; }
+    public int SizeY { get; }
+    public int SizeX { get; }
 
-    // Physical pixel sizes (µm). Used to populate coordinate transformations.
-    public double  PhysicalSizeZ { get; init; } = 1.0;
-    public double  PhysicalSizeY { get; init; } = 1.0;
-    public double  PhysicalSizeX { get; init; } = 1.0;
+    public double PhysicalSizeZ { get; init; } = 1.0;
+    public double PhysicalSizeY { get; init; } = 1.0;
+    public double PhysicalSizeX { get; init; } = 1.0;
 
-    // Chunk layout — sensible defaults for a single full XY plane per chunk.
     public int ChunkT { get; init; } = 1;
     public int ChunkC { get; init; } = 1;
     public int ChunkZ { get; init; } = 1;
     public int ChunkY { get; init; } = 512;
     public int ChunkX { get; init; } = 512;
 
-    public long[] Shape    => [SizeT, SizeC, SizeZ, SizeY, SizeX];
-    public int[]  Chunks   => [ChunkT, ChunkC, ChunkZ, ChunkY, ChunkX];
+    public long[] Shape  => [SizeT, SizeC, SizeZ, SizeY, SizeX];
+    public int[]  Chunks => [ChunkT, ChunkC, ChunkZ, ChunkY, ChunkX];
 
     public BioImageDescriptor(int sizeX, int sizeY, ZCT coord)
     {
-        SizeX = sizeX;
-        SizeY = sizeY;
-        SizeZ = coord.Z;
-        SizeC = coord.C;
-        SizeT = coord.T;
+        SizeX = sizeX; SizeY = sizeY;
+        SizeZ = coord.Z; SizeC = coord.C; SizeT = coord.T;
     }
 }
 
 // =============================================================================
-// Per-level descriptor — one per pyramid resolution
+// Per-level descriptor
 // =============================================================================
 
 /// <summary>
-/// Describes a single resolution level in a multi-scale pyramid.
-/// SizeX and SizeY are the dimensions at this level; all other dimensions
-/// are inherited from the parent <see cref="BioImageDescriptor"/>.
+/// Describes one resolution level in a multi-scale pyramid.
 /// </summary>
 public class ResolutionLevelDescriptor
 {
     public int    SizeX      { get; }
     public int    SizeY      { get; }
-    /// <summary>
-    /// Downsample factor relative to level 0 (full resolution).
-    /// Level 0 = 1.0, level 1 = 2.0, etc.
-    /// </summary>
+    /// <summary>Downsample factor relative to level 0. Level 0 = 1.0.</summary>
     public double Downsample { get; }
 
     public ResolutionLevelDescriptor(int sizeX, int sizeY, double downsample)
     {
-        SizeX      = sizeX;
-        SizeY      = sizeY;
-        Downsample = downsample;
+        SizeX = sizeX; SizeY = sizeY; Downsample = downsample;
     }
 }
 
@@ -88,52 +75,56 @@ public class ResolutionLevelDescriptor
 /// <summary>
 /// Creates a new OME-Zarr v3 dataset on disk and writes pixel data into it.
 ///
-/// Writing always goes through two phases:
-///   1. Bootstrap — write zarr.json metadata for the root group and each array.
-///   2. Fill — open the bootstrapped arrays and stream pixel data in.
+/// Performance notes
+/// -----------------
+/// • <see cref="ZarrArray"/> handles are opened once per level at construction
+///   time and cached for the lifetime of the writer.  Re-opening on every tile
+///   (the previous behaviour) paid the cost of reading and parsing zarr.json
+///   for every single write call.
 ///
-/// Supports both single-resolution and multi-scale pyramid output.
-/// When resolution levels are provided via <see cref="CreateAsync(string, BioImageDescriptor, IReadOnlyList{ResolutionLevelDescriptor}, CancellationToken)"/>,
-/// the writer creates one Zarr array per level (paths "0", "1", "2", …) and
-/// a multi-scale datasets entry for each in the root zarr.json.
+/// • <see cref="WriteRegionAsync"/> is guarded by a <see cref="SemaphoreSlim"/>
+///   whose width is <see cref="MaxConcurrentWrites"/> (default: logical CPU
+///   count, capped at 16).  Callers can fire many writes concurrently and the
+///   semaphore prevents the store from being overwhelmed while still keeping
+///   all cores busy.
 ///
-/// Usage:
-/// <code>
-///   var descriptor = new BioImageDescriptor { SizeY = 1024, SizeX = 1024, ... };
-///   var levels = new[] {
-///       new ResolutionLevelDescriptor(1024, 1024, 1.0),
-///       new ResolutionLevelDescriptor(512,  512,  2.0),
-///   };
-///   await using var writer = OmeZarrWriter.CreateAsync("/path/to/output.zarr", descriptor, levels);
-///   await writer.WriteRegionAsync(t, c, z, y, x, h, w, bytes, levelIndex: 0);
-///   await writer.WriteRegionAsync(t, c, z, y, x, h, w, bytes, levelIndex: 1);
-/// </code>
+/// • Metadata for all levels is written in parallel during bootstrap.
 /// </summary>
 public sealed class OmeZarrWriter : IAsyncDisposable
 {
-    private readonly IZarrStore                          _store;
-    private readonly BioImageDescriptor                  _descriptor;
+    // Maximum simultaneous in-flight store writes.
+    // One write per logical core is a good default for local NVMe/SSD;
+    // lower it (e.g. 4) for spinning-disk or network stores.
+    public static int MaxConcurrentWrites { get; set; } =
+        Math.Min(Environment.ProcessorCount, 16);
+
+    private readonly IZarrStore                              _store;
+    private readonly BioImageDescriptor                      _descriptor;
     private readonly IReadOnlyList<ResolutionLevelDescriptor> _levels;
-    private bool                                         _disposed;
+
+    // One cached ZarrArray per level — opened once, reused for all tiles.
+    private readonly ZarrArray[]  _arrays;
+    private readonly SemaphoreSlim _writeSem;
+    private bool _disposed;
 
     private OmeZarrWriter(
         IZarrStore                               store,
         BioImageDescriptor                       descriptor,
-        IReadOnlyList<ResolutionLevelDescriptor> levels)
+        IReadOnlyList<ResolutionLevelDescriptor> levels,
+        ZarrArray[]                              arrays)
     {
         _store      = store;
         _descriptor = descriptor;
         _levels     = levels;
+        _arrays     = arrays;
+        _writeSem   = new SemaphoreSlim(MaxConcurrentWrites, MaxConcurrentWrites);
     }
 
     // -------------------------------------------------------------------------
     // Public factories
     // -------------------------------------------------------------------------
 
-    /// <summary>
-    /// Single-resolution convenience overload (backward-compatible).
-    /// Creates a single array at path "0".
-    /// </summary>
+    /// <summary>Single-resolution convenience overload (backward-compatible).</summary>
     public static Task<OmeZarrWriter> CreateAsync(
         string             outputPath,
         BioImageDescriptor descriptor,
@@ -148,8 +139,9 @@ public sealed class OmeZarrWriter : IAsyncDisposable
 
     /// <summary>
     /// Multi-scale factory. Creates one Zarr array per entry in
-    /// <paramref name="levels"/>, with paths "0", "1", "2", … and a full
-    /// OME-NGFF multiscales block pointing at all of them.
+    /// <paramref name="levels"/> (paths "0", "1", "2", …).
+    /// All array zarr.json files are written in parallel.
+    /// The returned writer has pre-opened handles to every array.
     /// </summary>
     public static async Task<OmeZarrWriter> CreateAsync(
         string                                   outputPath,
@@ -161,13 +153,25 @@ public sealed class OmeZarrWriter : IAsyncDisposable
             throw new ArgumentException("At least one resolution level is required.", nameof(levels));
 
         Directory.CreateDirectory(outputPath);
+        var store = new LocalFileSystemStore(outputPath);
 
-        var store  = new LocalFileSystemStore(outputPath);
-        var writer = new OmeZarrWriter(store, descriptor, levels);
+        // --- Bootstrap metadata (root group + all array zarr.json files) ---
+        // Write root zarr.json first (sequential), then all array metadata in parallel.
+        await WriteRootGroupMetadataAsync(store, descriptor, levels, ct).ConfigureAwait(false);
 
-        await writer.BootstrapMetadataAsync(ct).ConfigureAwait(false);
+        await Task.WhenAll(
+            Enumerable.Range(0, levels.Count)
+                      .Select(i => WriteArrayMetadataAsync(store, descriptor, levels[i], i, ct))
+        ).ConfigureAwait(false);
 
-        return writer;
+        // --- Pre-open one ZarrArray handle per level ---
+        var rootGroup = await ZarrGroup.OpenRootAsync(store, ct).ConfigureAwait(false);
+        var arrays    = await Task.WhenAll(
+            Enumerable.Range(0, levels.Count)
+                      .Select(i => rootGroup.OpenArrayAsync(i.ToString(), ct))
+        ).ConfigureAwait(false);
+
+        return new OmeZarrWriter(store, descriptor, levels, arrays);
     }
 
     // -------------------------------------------------------------------------
@@ -176,88 +180,84 @@ public sealed class OmeZarrWriter : IAsyncDisposable
 
     /// <summary>
     /// Writes the full pixel buffer for the entire image at level 0 in one call.
-    /// <paramref name="pixelData"/> must be a flat C-order byte array whose
-    /// length equals Product(Shape) × ElementSizeBytes.
     /// </summary>
-    public async Task WritePixelDataAsync(
-        byte[]            pixelData,
-        CancellationToken ct = default)
+    public async Task WritePixelDataAsync(byte[] pixelData, CancellationToken ct = default)
     {
         ThrowIfDisposed();
+        var arr         = _arrays[0];
+        var regionStart = new long[arr.Metadata.Rank];
+        var regionEnd   = arr.Metadata.Shape;
 
-        var array       = await OpenArrayAsync(0, ct).ConfigureAwait(false);
-        var regionStart = new long[array.Metadata.Rank];
-        var regionEnd   = array.Metadata.Shape;
-
-        await array.WriteRegionAsync(regionStart, regionEnd, pixelData, ct)
-                   .ConfigureAwait(false);
+        await _writeSem.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await arr.WriteRegionAsync(regionStart, regionEnd, pixelData, ct)
+                     .ConfigureAwait(false);
+        }
+        finally { _writeSem.Release(); }
     }
 
     /// <summary>
-    /// Writes a single Z-plane (all T and C) into the array at level 0.
+    /// Writes a single Z-plane into the array at level 0.
     /// </summary>
-    public async Task WritePlaneAsync(
-        int               zIndex,
-        byte[]            planeData,
-        CancellationToken ct = default)
+    public async Task WritePlaneAsync(int zIndex, byte[] planeData, CancellationToken ct = default)
     {
         ThrowIfDisposed();
-
-        var d   = _descriptor;
-        var arr = await OpenArrayAsync(0, ct).ConfigureAwait(false);
-
-        var regionStart = new long[] { 0,       0,       zIndex,     0,       0 };
+        var d           = _descriptor;
+        var regionStart = new long[] { 0,       0,       zIndex,     0,       0       };
         var regionEnd   = new long[] { d.SizeT, d.SizeC, zIndex + 1, d.SizeY, d.SizeX };
 
-        await arr.WriteRegionAsync(regionStart, regionEnd, planeData, ct)
-                 .ConfigureAwait(false);
+        await _writeSem.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await _arrays[0].WriteRegionAsync(regionStart, regionEnd, planeData, ct)
+                            .ConfigureAwait(false);
+        }
+        finally { _writeSem.Release(); }
     }
 
     /// <summary>
-    /// Writes an arbitrary sub-region into the 5D array at the given resolution
+    /// Writes an arbitrary sub-region into the 5D array at
     /// <paramref name="levelIndex"/> (0 = full resolution).
     ///
-    /// <paramref name="data"/> must contain exactly
-    /// height × width × ElementSizeBytes bytes in C-order.
+    /// Thread-safe: many callers may call this concurrently; the internal
+    /// semaphore limits simultaneous in-flight store writes to
+    /// <see cref="MaxConcurrentWrites"/>.
     /// </summary>
     public async Task WriteRegionAsync(
         int    t,       int c,      int z,
         int    yOffset, int xOffset,
         int    height,  int width,
         byte[] data,
-        int    levelIndex     = 0,
-        CancellationToken ct  = default)
+        int    levelIndex    = 0,
+        CancellationToken ct = default)
     {
         ThrowIfDisposed();
 
-        var arr = await OpenArrayAsync(levelIndex, ct).ConfigureAwait(false);
-
-        var regionStart = new long[] { t,     c,     z,     yOffset,          xOffset };
+        var regionStart = new long[] { t,     c,     z,     yOffset,          xOffset         };
         var regionEnd   = new long[] { t + 1, c + 1, z + 1, yOffset + height, xOffset + width };
 
-        await arr.WriteRegionAsync(regionStart, regionEnd, data, ct)
-                 .ConfigureAwait(false);
+        await _writeSem.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await _arrays[levelIndex]
+                    .WriteRegionAsync(regionStart, regionEnd, data, ct)
+                    .ConfigureAwait(false);
+        }
+        finally { _writeSem.Release(); }
     }
 
     // -------------------------------------------------------------------------
-    // Metadata bootstrap
+    // Metadata helpers (static so they can be called before the writer exists)
     // -------------------------------------------------------------------------
 
-    private async Task BootstrapMetadataAsync(CancellationToken ct)
+    private static async Task WriteRootGroupMetadataAsync(
+        IZarrStore                               store,
+        BioImageDescriptor                       d,
+        IReadOnlyList<ResolutionLevelDescriptor> levels,
+        CancellationToken                        ct)
     {
-        await WriteRootGroupMetadataAsync(ct).ConfigureAwait(false);
-
-        for (int i = 0; i < _levels.Count; i++)
-            await WriteArrayMetadataAsync(i, ct).ConfigureAwait(false);
-    }
-
-    private async Task WriteRootGroupMetadataAsync(CancellationToken ct)
-    {
-        var d = _descriptor;
-
-        // Build one datasets entry per resolution level.
-        // Each level gets its own scale transform reflecting its downsample factor.
-        var datasets = _levels.Select((lvl, i) => new
+        var datasets = levels.Select((lvl, i) => new
         {
             path = i.ToString(),
             coordinateTransformations = new object[]
@@ -267,8 +267,7 @@ public sealed class OmeZarrWriter : IAsyncDisposable
                     type  = "scale",
                     scale = new[]
                     {
-                        1.0,
-                        1.0,
+                        1.0, 1.0,
                         d.PhysicalSizeZ,
                         d.PhysicalSizeY * lvl.Downsample,
                         d.PhysicalSizeX * lvl.Downsample
@@ -292,42 +291,33 @@ public sealed class OmeZarrWriter : IAsyncDisposable
             datasets                  = datasets,
             coordinateTransformations = new object[]
             {
-                new
-                {
-                    type  = "scale",
-                    scale = new[] { 1.0, 1.0, d.PhysicalSizeZ, d.PhysicalSizeY, d.PhysicalSizeX }
-                }
+                new { type = "scale", scale = new[] { 1.0, 1.0, d.PhysicalSizeZ, d.PhysicalSizeY, d.PhysicalSizeX } }
             }
         };
 
-        var rootGroupDoc = new
+        var rootDoc = new
         {
             zarr_format = 3,
             node_type   = "group",
             attributes  = new
             {
-                ome = new
-                {
-                    version     = "0.5",
-                    multiscales = new[] { multiscale }
-                }
+                ome = new { version = "0.5", multiscales = new[] { multiscale } }
             }
         };
 
-        await WriteJsonAsync("zarr.json", rootGroupDoc, ct).ConfigureAwait(false);
+        await WriteJsonAsync(store, "zarr.json", rootDoc, ct).ConfigureAwait(false);
     }
 
-    private async Task WriteArrayMetadataAsync(int levelIndex, CancellationToken ct)
+    private static async Task WriteArrayMetadataAsync(
+        IZarrStore                 store,
+        BioImageDescriptor         d,
+        ResolutionLevelDescriptor  lvl,
+        int                        levelIndex,
+        CancellationToken          ct)
     {
-        var d   = _descriptor;
-        var lvl = _levels[levelIndex];
-
         var elementSize = ZarrDataType.Parse(d.DataType).ElementSize;
-
-        // Chunk sizes: clamp to the level's actual dimensions so we never
-        // create chunks larger than the array they belong to.
-        int chunkY = Math.Min(d.ChunkY, lvl.SizeY);
-        int chunkX = Math.Min(d.ChunkX, lvl.SizeX);
+        int chunkY      = Math.Min(d.ChunkY, lvl.SizeY);
+        int chunkX      = Math.Min(d.ChunkX, lvl.SizeX);
 
         var arrayDoc = new
         {
@@ -354,49 +344,40 @@ public sealed class OmeZarrWriter : IAsyncDisposable
                     name          = "blosc",
                     configuration = new
                     {
-                        cname     = "lz4",
-                        clevel    = 5,
-                        shuffle   = "byteshuffle",
-                        typesize  = elementSize,
-                        blocksize = 0
+                        cname    = "lz4",
+                        clevel   = 5,
+                        shuffle  = "byteshuffle",
+                        typesize = elementSize,
+                        blocksize= 0
                     }
                 }
             }
         };
 
-        var arrayKey = $"{levelIndex}/zarr.json";
-        await WriteJsonAsync(arrayKey, arrayDoc, ct).ConfigureAwait(false);
+        await WriteJsonAsync(store, $"{levelIndex}/zarr.json", arrayDoc, ct).ConfigureAwait(false);
     }
 
-    // -------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------
-
-    private async Task<ZarrArray> OpenArrayAsync(int levelIndex, CancellationToken ct)
-    {
-        var arrayPath = levelIndex.ToString();
-        var rootGroup = await ZarrGroup.OpenRootAsync(_store, ct).ConfigureAwait(false);
-        return await rootGroup.OpenArrayAsync(arrayPath, ct).ConfigureAwait(false);
-    }
-
-    private async Task WriteJsonAsync(string key, object document, CancellationToken ct)
+    private static async Task WriteJsonAsync(IZarrStore store, string key, object document, CancellationToken ct)
     {
         var options = new JsonSerializerOptions { WriteIndented = true };
         var json    = JsonSerializer.SerializeToUtf8Bytes(document, options);
-
-        await _store.WriteAsync(key, json, ct).ConfigureAwait(false);
+        await store.WriteAsync(key, json, ct).ConfigureAwait(false);
     }
+
+    // -------------------------------------------------------------------------
+    // Disposal
+    // -------------------------------------------------------------------------
 
     private void ThrowIfDisposed()
     {
-        if (_disposed)
-            throw new ObjectDisposedException(nameof(OmeZarrWriter));
+        if (_disposed) throw new ObjectDisposedException(nameof(OmeZarrWriter));
     }
 
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;
         _disposed = true;
+        _writeSem.Dispose();
         await _store.DisposeAsync().ConfigureAwait(false);
     }
 }
