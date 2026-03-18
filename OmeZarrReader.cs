@@ -45,6 +45,21 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
     /// </summary>
     public string? NgffVersion { get; }
 
+    /// <summary>
+    /// The raw JSON attributes element from the store root metadata.
+    /// Exposed so callers can parse plate/well metadata themselves when the
+    /// built-in deserializer cannot handle a non-standard field encoding
+    /// (e.g. columnIndex stored as a JSON number instead of a string).
+    /// </summary>
+    public System.Text.Json.JsonElement? RawAttributes => _rootGroup.Metadata.RawAttributes;
+
+    /// <summary>
+    /// The root <see cref="ZarrGroup"/> of this store.
+    /// Exposed so callers can efficiently check child path existence via
+    /// <c>HasChildAsync</c> without opening a full reader for each path.
+    /// </summary>
+    public ZarrGroup RootGroup => _rootGroup;
+
     private OmeZarrReader(
         IZarrStore  store,
         ZarrGroup   rootGroup,

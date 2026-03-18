@@ -438,9 +438,48 @@ public static class OmeAttributesParser
 
     private sealed class WellReferenceJson
     {
-        [JsonPropertyName("columnIndex")] public string? ColumnIndex { get; init; }
-        [JsonPropertyName("rowIndex")]    public string? RowIndex    { get; init; }
+        [JsonPropertyName("columnIndex")]
+        [JsonConverter(typeof(StringOrNumberConverter))]
+        public string? ColumnIndex { get; init; }
+
+        [JsonPropertyName("rowIndex")]
+        [JsonConverter(typeof(StringOrNumberConverter))]
+        public string? RowIndex    { get; init; }
+
         [JsonPropertyName("path")]        public string? Path        { get; init; }
+    }
+
+    /// <summary>
+    /// Reads a JSON property into a string regardless of whether the value
+    /// was serialised as a JSON string or a JSON number.
+    /// Some OME-Zarr HCS stores emit columnIndex/rowIndex as integers rather
+    /// than the strings the spec mandates; this converter tolerates both.
+    /// </summary>
+    private sealed class StringOrNumberConverter : JsonConverter<string?>
+    {
+        public override string? Read(
+            ref Utf8JsonReader    reader,
+            Type                  typeToConvert,
+            JsonSerializerOptions options)
+        {
+            return reader.TokenType switch
+            {
+                JsonTokenType.String => reader.GetString(),
+                JsonTokenType.Number => reader.GetInt64().ToString(),
+                JsonTokenType.Null   => null,
+                _                    => throw new JsonException(
+                    $"Cannot convert token {reader.TokenType} to string.")
+            };
+        }
+
+        public override void Write(
+            Utf8JsonWriter        writer,
+            string?               value,
+            JsonSerializerOptions options)
+        {
+            if (value is null) writer.WriteNullValue();
+            else               writer.WriteStringValue(value);
+        }
     }
 
     private sealed class AcquisitionJson

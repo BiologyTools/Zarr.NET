@@ -96,6 +96,7 @@ public sealed class WellReference
     public string ColumnIndex { get; init; } = string.Empty;
     public string RowIndex    { get; init; } = string.Empty;
     public string Path        { get; init; } = string.Empty;  // e.g. "A/1"
+    //public List<WellImageMetadata>? Images { get; set; }
 }
 
 public sealed class AcquisitionMetadata
