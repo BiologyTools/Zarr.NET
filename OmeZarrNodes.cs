@@ -246,6 +246,25 @@ public sealed class ResolutionLevelNode
         var axes  = EffectiveAxes;
         var shape = Shape;
 
+        // Guard: if the tile origin is at or beyond the image extent on either
+        // spatial axis, there is no valid image data to return.  Without this,
+        // the Clamp below snaps start to axisLen-1 and returns 1 pixel of edge
+        // data which then gets tiled/repeated across the full 256×256 output
+        // buffer — producing the bright noise strip at image boundaries.
+        for (int i = 0; i < axes.Length; i++)
+        {
+            long axisLen = shape[i];
+            switch (axes[i].Name.ToLowerInvariant())
+            {
+                case "x":
+                    if (tileOriginX >= axisLen) return null;
+                    break;
+                case "y":
+                    if (tileOriginY >= axisLen) return null;
+                    break;
+            }
+        }
+
         var start = new long[axes.Length];
         var end   = new long[axes.Length];
 
