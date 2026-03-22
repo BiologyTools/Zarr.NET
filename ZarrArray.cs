@@ -49,7 +49,14 @@ public sealed class ZarrArray
     // -------------------------------------------------------------------------
     // Public API
     // -------------------------------------------------------------------------
-    public const int MaxParallelChunks = 16;
+    // Reduced from 16: each tile fetch spawns this many concurrent S3 requests.
+    // With 50-150 tiles fetching simultaneously the old value caused thousands of
+    // in-flight byte[] buffers held by the AWS SDK IKVM runtime (~2GB).
+    public const int MaxParallelChunks = 4;
+
+    // Global semaphore: caps the total number of concurrent chunk S3 fetches
+    // across all parallel tile requests to prevent memory spikes.
+    private static readonly SemaphoreSlim s_globalFetchSemaphore = new SemaphoreSlim(32, 32);
     /// <summary>
     /// Reads a region of the array defined by per-axis [start, end) ranges.
     /// Returns the decoded bytes for that region, assembled from the
@@ -177,7 +184,16 @@ public sealed class ZarrArray
     private async Task<byte[]> ReadDirectChunkAsync(long[] chunkCoord, CancellationToken ct)
     {
         var key = BuildChunkKey(chunkCoord);
-        var bytes = await _store.ReadAsync(key, ct).ConfigureAwait(false);
+        await s_globalFetchSemaphore.WaitAsync(ct).ConfigureAwait(false);
+        byte[] bytes;
+        try
+        {
+            bytes = await _store.ReadAsync(key, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            s_globalFetchSemaphore.Release();
+        }
 
         if (bytes is null)
             return BuildFillValueChunk();

@@ -171,36 +171,46 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
         ["ukbb"] = "https://uk1s3.embassy.ebi.ac.uk",
     };
 
+    // Static store cache — keyed by normalised URL/path.
+    // Reusing stores means reusing their S3/HTTP connection pools and static
+    // chunk/metadata caches, avoiding both connection-pool proliferation and
+    // redundant network fetches when multiple OmeZarrReader instances open the
+    // same dataset (e.g. per-tile calls in Bio.cs or per-well-field opens).
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, IZarrStore>
+        s_storeCache = new(StringComparer.OrdinalIgnoreCase);
+
     private static IZarrStore CreateStore(string pathOrUrl)
     {
-        // s3:// URIs — native S3 SDK store
-        if (S3ZarrStore.IsS3Uri(pathOrUrl))
+        // Normalise the key: trim trailing slash so ".../foo/" and ".../foo" share a store.
+        var key = pathOrUrl.TrimEnd('/');
+
+        // For remote URLs we cache at the dataset root (the pathOrUrl itself).
+        // Local paths are never cached (no connection-pool overhead to share).
+        if (!S3ZarrStore.IsS3Uri(pathOrUrl) &&
+            (!Uri.TryCreate(pathOrUrl, UriKind.Absolute, out var uriCheck) ||
+             (uriCheck.Scheme != "http" && uriCheck.Scheme != "https")))
         {
-            var bucketName = S3ZarrStore.ParseBucketName(pathOrUrl);
-
-            // Check if this bucket maps to a known S3-compatible endpoint
-            if (KnownS3Endpoints.TryGetValue(bucketName, out var serviceUrl))
-                return new S3ZarrStore(pathOrUrl, serviceUrl);
-
-            // Default: AWS S3 with region auto-detection
-            return new S3ZarrStore(pathOrUrl);
+            // Local filesystem — always a fresh store (cheap, no pool cost).
+            return new LocalFileSystemStore(
+                Uri.TryCreate(pathOrUrl, UriKind.Absolute, out var fileUri) && fileUri.Scheme == "file"
+                    ? fileUri.LocalPath
+                    : pathOrUrl);
         }
 
-        // http:// and https:// — generic HTTP store
-        if (Uri.TryCreate(pathOrUrl, UriKind.Absolute, out var uri))
+        return s_storeCache.GetOrAdd(key, _ =>
         {
-            if (uri.Scheme == "http" || uri.Scheme == "https")
+            // s3:// URIs — native S3 SDK store
+            if (S3ZarrStore.IsS3Uri(pathOrUrl))
             {
-                return new HttpZarrStore(pathOrUrl);
+                var bucketName = S3ZarrStore.ParseBucketName(pathOrUrl);
+                if (KnownS3Endpoints.TryGetValue(bucketName, out var serviceUrl))
+                    return new S3ZarrStore(pathOrUrl, serviceUrl);
+                return new S3ZarrStore(pathOrUrl);
             }
-            else if (uri.Scheme == "file")
-            {
-                return new LocalFileSystemStore(uri.LocalPath);
-            }
-        }
 
-        // Treat as local filesystem path
-        return new LocalFileSystemStore(pathOrUrl);
+            // http:// / https:// — generic HTTP store
+            return new HttpZarrStore(pathOrUrl);
+        });
     }
 
     // -------------------------------------------------------------------------
