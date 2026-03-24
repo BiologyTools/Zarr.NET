@@ -124,9 +124,14 @@ public sealed class HttpZarrStore : IZarrStore
     // IZarrStore — ReadAsync
     // =====================================================================
 
+    /// <summary>Maximum number of retry attempts for transient HTTP errors.</summary>
+    private const int MaxRetries = 3;
+
     public async Task<byte[]?> ReadAsync(string key, CancellationToken ct = default)
     {
-        A:
+        int retry = 0;
+
+    A:
         ThrowIfDisposed();
 
         var cacheKey = BuildCacheKey(key);
@@ -147,8 +152,6 @@ public sealed class HttpZarrStore : IZarrStore
 
         try
         {
-            if (_httpClient.BaseAddress == null)
-                CreateDefaultHttpClient();
             var response = await _httpClient.GetAsync(url, ct).ConfigureAwait(false);
             System.Diagnostics.Debug.WriteLine(
     $"[HttpZarrStore] GET {url} → {(int)response.StatusCode} {response.StatusCode}");
@@ -179,6 +182,8 @@ public sealed class HttpZarrStore : IZarrStore
         }
         catch (HttpRequestException ex) when (ex.StatusCode == null)
         {
+            retry++;
+            if (retry >= MaxRetries) return null;
             _httpClient = CreateDefaultHttpClient();
             goto A;
         }
@@ -188,11 +193,15 @@ public sealed class HttpZarrStore : IZarrStore
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.RequestTimeout)
         {
-           _httpClient = CreateDefaultHttpClient();
+            retry++;
+            if (retry >= MaxRetries) return null;
+            _httpClient = CreateDefaultHttpClient();
             goto A;
         }
         catch (TaskCanceledException ex)
         {
+            retry++;
+            if (retry >= MaxRetries) return null;
             _httpClient = CreateDefaultHttpClient();
             goto A;
         }

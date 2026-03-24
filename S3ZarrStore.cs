@@ -272,9 +272,16 @@ public sealed class S3ZarrStore : IZarrStore
     // =========================================================================
     // IZarrStore — Read  (hot path — optimised for parallel chunk fetching)
     // =========================================================================
-    int retry = 0;
+
+    /// <summary>Maximum number of retry attempts for transient S3 errors.</summary>
+    private const int MaxRetries = 3;
+
     public async Task<byte[]?> ReadAsync(string key, CancellationToken ct = default)
     {
+        // Retry counter is local to each call — prevents cross-call state
+        // leakage that previously caused infinite retry loops.
+        int retry = 0;
+
     start:
         ThrowIfDisposed();
 
@@ -355,10 +362,13 @@ public sealed class S3ZarrStore : IZarrStore
         }
         catch (Exception ex)
         {
-            CreateDefaultAwsClient();
-            if (retry < 3)
-                return null;
+            // Fixed: condition was inverted (retry < 3 returned null immediately,
+            // then looped forever once retry exceeded 3 because it was an instance
+            // field that persisted across calls). Now retry is local and the guard
+            // correctly stops retrying after MaxRetries attempts.
             retry++;
+            if (retry >= MaxRetries)
+                return null;
             goto start;
         }
         
