@@ -25,11 +25,11 @@ public sealed class ChunkLruCache
     // -----------------------------------------------------------------
 
     /// <summary>
-    /// Default budget: 64 MB. Tiles are already cached at the GPU texture
+    /// Default budget: 16 MB. Tiles are already cached at the GPU texture
     /// level by SlideRenderer, so the chunk cache only needs to cover
     /// in-flight decode work and immediate re-pan hits.
     /// </summary>
-    public const long DefaultMaxBytes = 64L * 1024 * 1024;
+    public const long DefaultMaxBytes = 16L * 1024 * 1024;
 
     private readonly long _maxBytes;
 

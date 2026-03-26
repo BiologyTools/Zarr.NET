@@ -65,8 +65,8 @@ public sealed class HttpZarrStore : IZarrStore
     /// <summary>
     /// Existence-probe cache shared across all instances.
     /// Key = "baseUrl | storeRelativeKey", value = true (exists) / false (404).
-    /// Prevents repeated HEAD requests for the same v3/v2 probing pattern
-    /// that ZarrGroup.OpenArrayAsync and OpenRootAsync perform on every call.
+    /// Only metadata keys are cached here so we do not accumulate one entry
+    /// per chunk path while panning across large datasets.
     /// </summary>
     private static readonly ConcurrentDictionary<string, bool> s_existsCache = new();
 
@@ -160,8 +160,11 @@ public sealed class HttpZarrStore : IZarrStore
                 if (IsMetadataKey(key))
                     s_metadataCache[cacheKey] = null;
 
-                // Record negative existence so ExistsAsync won't HEAD again
-                s_existsCache[cacheKey] = false;
+                if (IsMetadataKey(key))
+                {
+                    // Record negative existence so ExistsAsync won't probe again.
+                    s_existsCache[cacheKey] = false;
+                }
 
                 return null;
             }
@@ -170,8 +173,11 @@ public sealed class HttpZarrStore : IZarrStore
 
             var data = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
 
-            // Record positive existence
-            s_existsCache[cacheKey] = true;
+            if (IsMetadataKey(key))
+            {
+                // Record positive existence only for metadata keys.
+                s_existsCache[cacheKey] = true;
+            }
 
             if (IsMetadataKey(key))
                 s_metadataCache[cacheKey] = data;
@@ -184,6 +190,7 @@ public sealed class HttpZarrStore : IZarrStore
         {
             retry++;
             if (retry >= MaxRetries) return null;
+            _httpClient.Dispose();
             _httpClient = CreateDefaultHttpClient();
             goto A;
         }
@@ -195,6 +202,7 @@ public sealed class HttpZarrStore : IZarrStore
         {
             retry++;
             if (retry >= MaxRetries) return null;
+            _httpClient.Dispose();
             _httpClient = CreateDefaultHttpClient();
             goto A;
         }
@@ -202,6 +210,7 @@ public sealed class HttpZarrStore : IZarrStore
         {
             retry++;
             if (retry >= MaxRetries) return null;
+            _httpClient.Dispose();
             _httpClient = CreateDefaultHttpClient();
             goto A;
         }
@@ -217,8 +226,8 @@ public sealed class HttpZarrStore : IZarrStore
 
         var cacheKey = BuildCacheKey(key);
 
-        // Check the shared existence cache first — covers both metadata and chunks
-        if (s_existsCache.TryGetValue(cacheKey, out var exists))
+        // Check the shared existence cache first, but only for metadata keys.
+        if (IsMetadataKey(key) && s_existsCache.TryGetValue(cacheKey, out var exists))
             return exists;
 
         // A previous ReadAsync may have populated the metadata cache without
@@ -233,7 +242,6 @@ public sealed class HttpZarrStore : IZarrStore
         // A previous ReadAsync may have cached chunk data
         if (!IsMetadataKey(key) && GetChunkCache().TryGet(key) is not null)
         {
-            s_existsCache[cacheKey] = true;
             return true;
         }
 
@@ -247,13 +255,15 @@ public sealed class HttpZarrStore : IZarrStore
 
             if (headResponse.IsSuccessStatusCode)
             {
-                s_existsCache[cacheKey] = true;
+                if (IsMetadataKey(key))
+                    s_existsCache[cacheKey] = true;
                 return true;
             }
 
             if (headResponse.StatusCode == HttpStatusCode.NotFound)
             {
-                s_existsCache[cacheKey] = false;
+                if (IsMetadataKey(key))
+                    s_existsCache[cacheKey] = false;
                 return false;
             }
 
@@ -278,12 +288,14 @@ public sealed class HttpZarrStore : IZarrStore
             var rangeExists = rangeResponse.IsSuccessStatusCode
                 || rangeResponse.StatusCode == HttpStatusCode.PartialContent;
 
-            s_existsCache[cacheKey] = rangeExists;
+            if (IsMetadataKey(key))
+                s_existsCache[cacheKey] = rangeExists;
             return rangeExists;
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
-            s_existsCache[cacheKey] = false;
+            if (IsMetadataKey(key))
+                s_existsCache[cacheKey] = false;
             return false;
         }
         catch (TaskCanceledException) when (ct.IsCancellationRequested)

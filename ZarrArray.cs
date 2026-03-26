@@ -49,14 +49,14 @@ public sealed class ZarrArray
     // -------------------------------------------------------------------------
     // Public API
     // -------------------------------------------------------------------------
-    // Reduced from 16: each tile fetch spawns this many concurrent S3 requests.
-    // With 50-150 tiles fetching simultaneously the old value caused thousands of
-    // in-flight byte[] buffers held by the AWS SDK IKVM runtime (~2GB).
-    public const int MaxParallelChunks = 4;
+    // Keep per-tile chunk fan-out low so panning does not build up large
+    // numbers of in-flight byte[] buffers before the previous viewport has
+    // finished decoding and uploading.
+    public const int MaxParallelChunks = 2;
 
     // Global semaphore: caps the total number of concurrent chunk S3 fetches
     // across all parallel tile requests to prevent memory spikes.
-    private static readonly SemaphoreSlim s_globalFetchSemaphore = new SemaphoreSlim(32, 32);
+    private static readonly SemaphoreSlim s_globalFetchSemaphore = new SemaphoreSlim(16, 16);
     /// <summary>
     /// Reads a region of the array defined by per-axis [start, end) ranges.
     /// Returns the decoded bytes for that region, assembled from the
