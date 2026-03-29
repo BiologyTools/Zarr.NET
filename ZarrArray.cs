@@ -20,6 +20,12 @@ namespace ZarrNET.Core.Zarr;
 /// </summary>
 public sealed class ZarrArray
 {
+    private static int s_writeDebugCount = 0;
+    private static int s_readDebugCount = 0;
+    private static readonly ConcurrentDictionary<string, byte> s_writePlaneProbeLogged = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, byte> s_readPlaneProbeLogged = new(StringComparer.Ordinal);
+    private static readonly string s_logPath = @"C:\Users\Public\biolog.txt";
+
     private readonly IZarrStore _store;
     private readonly string _arrayPath;   // store-relative path to the array root
     private readonly CodecPipeline _pipeline;
@@ -199,6 +205,18 @@ public sealed class ZarrArray
             return BuildFillValueChunk();
 
         var decoded = await _pipeline.DecodeAsync(bytes, ct).ConfigureAwait(false);
+        if (s_readDebugCount < 8)
+        {
+            Log($"[ZarrArray.ReadDirectChunkAsync] chunk={string.Join(",", chunkCoord)} encodedLen={bytes.Length} " +
+                $"encodedSample={SampleBytes(bytes)} decodedLen={decoded.Length} decodedSample={SampleBytes(decoded)} decodedU16={SampleU16(decoded)}");
+            s_readDebugCount++;
+        }
+
+        if (ShouldLogPlaneProbe(chunkCoord, s_readPlaneProbeLogged))
+        {
+            Log($"[ZarrArray.ReadDirectChunkAsync.Probe] chunk={string.Join(",", chunkCoord)} encodedLen={bytes.Length} " +
+                $"encodedSample={SampleBytes(bytes)} decodedLen={decoded.Length} decodedSample={SampleBytes(decoded)} decodedU16={SampleU16(decoded)}");
+        }
 
         return PadOrValidateDecodedChunk(decoded, chunkCoord);
     }
@@ -251,7 +269,14 @@ public sealed class ZarrArray
         if (innerChunkBytes is null)
             return BuildFillValueChunk();
 
-        return PadOrValidateDecodedChunk(innerChunkBytes, chunkCoord);
+        var padded = PadOrValidateDecodedChunk(innerChunkBytes, chunkCoord);
+        if (s_readDebugCount < 8)
+        {
+            Log($"[ZarrArray.ReadShardedChunkAsync] chunk={string.Join(",", chunkCoord)} innerLen={innerChunkBytes.Length} " +
+                $"innerSample={SampleBytes(innerChunkBytes)} paddedLen={padded.Length} paddedSample={SampleBytes(padded)} paddedU16={SampleU16(padded)}");
+            s_readDebugCount++;
+        }
+        return padded;
     }
 
     // -------------------------------------------------------------------------
@@ -290,8 +315,35 @@ public sealed class ZarrArray
 
     private async Task WriteChunkAsync(long[] chunkCoord, byte[] decodedData, CancellationToken ct)
     {
+        if (s_writeDebugCount < 8)
+        {
+            Log($"[ZarrArray.WriteChunkAsync] chunk={string.Join(",", chunkCoord)} decodedLen={decodedData.Length} " +
+                $"decodedSample={SampleBytes(decodedData)} decodedU16={SampleU16(decodedData)}");
+        }
+
         var encoded = await _pipeline.EncodeAsync(decodedData, ct).ConfigureAwait(false);
         var key = BuildChunkKey(chunkCoord);
+
+        if (s_writeDebugCount < 8)
+        {
+            Log($"[ZarrArray.WriteChunkAsync] chunk={string.Join(",", chunkCoord)} encodedLen={encoded.Length} " +
+                $"encodedSample={SampleBytes(encoded)}");
+            s_writeDebugCount++;
+        }
+
+        try
+        {
+            var roundTrip = await _pipeline.DecodeAsync(encoded, ct).ConfigureAwait(false);
+            if (s_writeDebugCount <= 8)
+            {
+                Log($"[ZarrArray.WriteChunkAsync.RoundTrip] chunk={string.Join(",", chunkCoord)} roundTripLen={roundTrip.Length} " +
+                    $"roundTripSample={SampleBytes(roundTrip)} roundTripU16={SampleU16(roundTrip)}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"[ZarrArray.WriteChunkAsync.RoundTrip] chunk={string.Join(",", chunkCoord)} EXCEPTION {ex.GetType().Name}: {ex.Message}");
+        }
 
         await _store.WriteAsync(key, encoded, ct).ConfigureAwait(false);
     }
@@ -321,6 +373,20 @@ public sealed class ZarrArray
             copyStart: clampedStart,
             copyEnd: clampedEnd,
             elementSize: elementSize);
+
+        if (s_writeDebugCount < 8)
+        {
+            Log($"[ZarrArray.WriteChunkRegionAsync] chunk={string.Join(",", chunkCoord)} srcShape={string.Join("x", regionShape)} " +
+                $"chunkOrigin={string.Join(",", chunkOrigin)} srcSample={SampleBytes(sourceData)} chunkSample={SampleBytes(chunkData)} " +
+                $"srcU16={SampleU16(sourceData)} chunkU16={SampleU16(chunkData)}");
+        }
+
+        if (ShouldLogPlaneProbe(chunkCoord, s_writePlaneProbeLogged))
+        {
+            Log($"[ZarrArray.WriteChunkRegionAsync.Probe] chunk={string.Join(",", chunkCoord)} srcShape={string.Join("x", regionShape)} " +
+                $"chunkOrigin={string.Join(",", chunkOrigin)} srcSample={SampleBytes(sourceData)} chunkSample={SampleBytes(chunkData)} " +
+                $"srcU16={SampleU16(sourceData)} chunkU16={SampleU16(chunkData)}");
+        }
 
         await WriteChunkAsync(chunkCoord, chunkData, ct).ConfigureAwait(false);
     }
@@ -636,6 +702,49 @@ public sealed class ZarrArray
 
     private static long ComputeTotalElements(long[] shape)
         => shape.Aggregate(1L, (acc, s) => acc * s);
+
+    private static void Log(string message)
+    {
+        try
+        {
+            File.AppendAllText(s_logPath, message + Environment.NewLine);
+        }
+        catch
+        {
+        }
+    }
+
+    private static string SampleBytes(byte[] data, int count = 16)
+        => string.Join(",", data.Take(Math.Min(count, data.Length)));
+
+    private static string SampleU16(byte[] data, int count = 8)
+    {
+        if (data.Length < 2)
+            return string.Empty;
+
+        int n = Math.Min(count, data.Length / 2);
+        var vals = new ushort[n];
+        for (int i = 0; i < n; i++)
+            vals[i] = BitConverter.ToUInt16(data, i * 2);
+        return string.Join(",", vals);
+    }
+
+    private static bool ShouldLogPlaneProbe(long[] chunkCoord, ConcurrentDictionary<string, byte> seen)
+    {
+        if (chunkCoord.Length < 3)
+            return false;
+
+        // Only log the chunk anchored at the spatial origin for each logical plane.
+        if (chunkCoord[^1] != 0 || chunkCoord[^2] != 0)
+            return false;
+
+        long a = chunkCoord[0];
+        long b = chunkCoord.Length > 1 ? chunkCoord[1] : 0;
+        long c = chunkCoord.Length > 2 ? chunkCoord[2] : 0;
+        var key = $"{chunkCoord.Length}:{a}:{b}:{c}";
+
+        return seen.TryAdd(key, 0);
+    }
 
     // -------------------------------------------------------------------------
     // N-dimensional iteration helpers

@@ -192,13 +192,11 @@ public sealed class BloscCodec : IZarrCodec
         var nblocks    = header.BlockCount;
 
         // c-blosc splits a block into TypeSize streams when shuffle is active and TypeSize > 1.
-        // The DOSPLIT flag (0x10) was added in later c-blosc versions to make this explicit,
-        // but older writers do not set it even when data is split. Inferring from shuffle and
-        // TypeSize is the only reliable method. DOSPLIT SET explicitly means "not split" in
-        // some encoders, so we respect it as a veto but do not require it to be set.
+        // Many Blosc frames in the wild split whenever shuffle is active and TypeSize > 1,
+        // even when the DOSPLIT bit is absent or inconsistent. The safest behavior for
+        // compatibility is to infer split mode from shuffle + TypeSize and ignore the bit.
         var shouldSplit = header.Shuffle != BloscShuffle.None
-                       && header.TypeSize > 1
-                       && !header.DoSplit;
+                       && header.TypeSize > 1;
         var nSplits    = shouldSplit ? header.TypeSize : 1;
         var bstartsBase = 16;
 

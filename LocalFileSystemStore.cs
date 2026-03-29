@@ -6,6 +6,9 @@ namespace ZarrNET.Core.Zarr.Store;
 /// </summary>
 public sealed class LocalFileSystemStore : IZarrStore, IDisposable
 {
+    private static int s_debugCount = 0;
+    private static readonly string s_logPath = @"C:\Users\Public\biolog.txt";
+
     private readonly string _rootPath;
     private bool _disposed;
 
@@ -37,7 +40,13 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
         if (!File.Exists(fullPath))
             return null;
 
-        return await File.ReadAllBytesAsync(fullPath, ct).ConfigureAwait(false);
+        var data = await File.ReadAllBytesAsync(fullPath, ct).ConfigureAwait(false);
+        if (s_debugCount < 16)
+        {
+            Log($"[LocalFileSystemStore.ReadAsync] key={key} path={fullPath} len={data.Length} sample={SampleBytes(data)}");
+            s_debugCount++;
+        }
+        return data;
     }
 
     public async Task WriteAsync(string key, byte[] data, CancellationToken ct = default)
@@ -50,6 +59,24 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
         Directory.CreateDirectory(directory);
 
         await File.WriteAllBytesAsync(fullPath, data, ct).ConfigureAwait(false);
+
+        if (s_debugCount < 16)
+        {
+            Log($"[LocalFileSystemStore.WriteAsync] key={key} path={fullPath} len={data.Length} sample={SampleBytes(data)}");
+            if (key.StartsWith("0/c/", StringComparison.Ordinal))
+            {
+                try
+                {
+                    var disk = await File.ReadAllBytesAsync(fullPath, ct).ConfigureAwait(false);
+                    Log($"[LocalFileSystemStore.WriteAsync] disk key={key} path={fullPath} len={disk.Length} sample={SampleBytes(disk)}");
+                }
+                catch (Exception ex)
+                {
+                    Log($"[LocalFileSystemStore.WriteAsync] disk-read EXCEPTION key={key} path={fullPath} {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+            s_debugCount++;
+        }
     }
 
     public Task<bool> ExistsAsync(string key, CancellationToken ct = default)
@@ -144,4 +171,18 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
         if (_disposed)
             throw new ObjectDisposedException(nameof(LocalFileSystemStore));
     }
+
+    private static void Log(string message)
+    {
+        try
+        {
+            File.AppendAllText(s_logPath, message + Environment.NewLine);
+        }
+        catch
+        {
+        }
+    }
+
+    private static string SampleBytes(byte[] data, int count = 16)
+        => string.Join(",", data.Take(Math.Min(count, data.Length)));
 }
