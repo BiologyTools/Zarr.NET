@@ -7,7 +7,7 @@ namespace ZarrNET.Core.Zarr.Store;
 public sealed class LocalFileSystemStore : IZarrStore, IDisposable
 {
     private static int s_debugCount = 0;
-    private static readonly string s_logPath = @"C:\Users\Public\biolog.txt";
+    private static readonly string s_logPath = @"log.txt";
 
     private readonly string _rootPath;
     private bool _disposed;
