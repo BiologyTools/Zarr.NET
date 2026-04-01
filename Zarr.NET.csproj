@@ -12,12 +12,12 @@
 	<PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
 	<PackageProjectUrl>https://biologytools.github.io/</PackageProjectUrl>
 	<PackageTags>Biology; Microscopy; Whole-Slide-Image; Zarr; OME-Zarr; NGFF;</PackageTags>
-	<PackageReleaseNotes>Saved OME-Zarrs now open in Fiji/ImageJ. Also a significant performance boost to image saving.</PackageReleaseNotes>
+	<PackageReleaseNotes>Added label support and 16-bit saving improvements, plus well-plate handling updates, writing performance boosts, S3 retry handling, and memory fixes.</PackageReleaseNotes>
 	<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 	<Authors>Erik Repo</Authors>
 	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-	<Version>0.3.0</Version>
-	  <PackageVersion>0.3.0</PackageVersion>
+	<Version>0.4.0</Version>
+	  <PackageVersion>0.4.0</PackageVersion>
 	<PackageReadmeFile>README.md</PackageReadmeFile>
 	<PackageIcon>icon.png</PackageIcon>
   </PropertyGroup>
