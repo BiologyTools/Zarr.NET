@@ -212,8 +212,13 @@ public sealed class BloscCodec : IZarrCodec
 
             var outputOffset = blockIdx * header.BlockSize;
 
+            var nextBstart = isLastBlock
+                ? frame.Length
+                : BinaryPrimitives.ReadInt32LittleEndian(
+                    frame.AsSpan(bstartsBase + (blockIdx + 1) * 4, 4));
+
             DecompressBlockSplits(
-                frame, header, bstart, nSplits, uncompressedBlockSize,
+                frame, header, bstart, nextBstart, nSplits, uncompressedBlockSize,
                 output.AsSpan(outputOffset, uncompressedBlockSize));
         }
     }
@@ -226,10 +231,22 @@ public sealed class BloscCodec : IZarrCodec
         byte[]             frame,
         BloscFrameHeader   header,
         int                bstart,
+        int                blockEnd,
         int                nSplits,
         int                uncompressedBlockSize,
         Span<byte>         outputBlock)
     {
+        var firstCsize = BinaryPrimitives.ReadInt32LittleEndian(frame.AsSpan(bstart, 4));
+        var firstStreamEnd = bstart + 4 + firstCsize;
+
+        if (firstStreamEnd == blockEnd)
+        {
+            // The block is stored as a single compressed stream.
+            DecompressStream(header.InternalCodec, frame, bstart, outputBlock);
+            ApplyUnshuffle(outputBlock, header.TypeSize, header.Shuffle);
+            return;
+        }
+
         if (nSplits == 1)
         {
             // No split — single stream directly into output, then unshuffle in-place.
@@ -239,19 +256,20 @@ public sealed class BloscCodec : IZarrCodec
         }
 
         // Split mode: typesize streams, each covering one byte-position of the shuffled block.
-        // c-blosc gives the integer-division portion to each split, and any remainder bytes
-        // to the LAST split. The concatenation of all splits is the shuffled form.
+        // Blosc's byte-shuffle layout assigns the remainder bytes to the FIRST splits, not the last.
+        // The concatenation of all splits is the shuffled form.
         var baseSplitSize = uncompressedBlockSize / nSplits;
         var remainder     = uncompressedBlockSize % nSplits;
         var shuffledBuf   = new byte[uncompressedBlockSize];
         var streamOffset  = bstart;
+        var splitOffset   = 0;
 
         for (int splitIdx = 0; splitIdx < nSplits; splitIdx++)
         {
-            var isLastSplit   = splitIdx == nSplits - 1;
-            var thisSplitSize = baseSplitSize + (isLastSplit ? remainder : 0);
-            var splitSpan     = shuffledBuf.AsSpan(splitIdx * baseSplitSize, thisSplitSize);
+            var thisSplitSize = baseSplitSize + (splitIdx < remainder ? 1 : 0);
+            var splitSpan     = shuffledBuf.AsSpan(splitOffset, thisSplitSize);
             streamOffset      = DecompressStream(header.InternalCodec, frame, streamOffset, splitSpan);
+            splitOffset      += thisSplitSize;
         }
 
         ApplyUnshuffle(shuffledBuf.AsSpan(), header.TypeSize, header.Shuffle);
@@ -471,21 +489,22 @@ public sealed class BloscCodec : IZarrCodec
         }
 
         // Split into nSplits segments and compress each independently.
-        // Remainder bytes go to the last split — must match DecompressBlockSplits exactly.
+        // Blosc's byte-shuffle layout assigns the remainder bytes to the FIRST splits.
         var baseSplitSize = shuffled.Length / nSplits;
         var remainder     = shuffled.Length % nSplits;
         var streamParts   = new byte[nSplits][];
+        var splitOffset   = 0;
 
         for (int splitIdx = 0; splitIdx < nSplits; splitIdx++)
         {
-            var isLastSplit   = splitIdx == nSplits - 1;
-            var thisSplitSize = baseSplitSize + (isLastSplit ? remainder : 0);
-            var segment       = shuffled.AsSpan(splitIdx * baseSplitSize, thisSplitSize).ToArray();
+            var thisSplitSize = baseSplitSize + (splitIdx < remainder ? 1 : 0);
+            var segment       = shuffled.AsSpan(splitOffset, thisSplitSize).ToArray();
             var compressed    = CompressBlock(segment, thisSplitSize);
             var part          = new byte[4 + compressed.Length];
             BinaryPrimitives.WriteInt32LittleEndian(part.AsSpan(0, 4), compressed.Length);
             compressed.CopyTo(part, 4);
             streamParts[splitIdx] = part;
+            splitOffset += thisSplitSize;
         }
 
         var totalSize = streamParts.Sum(p => p.Length);
