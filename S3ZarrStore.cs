@@ -328,9 +328,19 @@ public sealed class S3ZarrStore : IZarrStore
                 {
                     int read = await response.ResponseStream.ReadAsync(
                         data.AsMemory(offset, remaining), ct).ConfigureAwait(false);
-                    if (read == 0) break;
+                    if (read == 0)
+                    {
+                        throw new IOException(
+                            $"Short S3 read for '{s3Key}': expected {contentLength} bytes but received {offset} bytes.");
+                    }
                     offset    += read;
                     remaining -= read;
+                }
+
+                if (offset != contentLength)
+                {
+                    throw new IOException(
+                        $"Short S3 read for '{s3Key}': expected {contentLength} bytes but received {offset} bytes.");
                 }
             }
             else

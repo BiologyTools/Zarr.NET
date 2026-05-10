@@ -30,6 +30,7 @@ namespace ZarrNET.Core;
 public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
 {
     private readonly IZarrStore  _store;
+    private readonly bool        _ownsStore;
     private readonly ZarrGroup   _rootGroup;
     private readonly System.Text.Json.JsonElement? _omeGroupAttributes;  // only for bioformats2raw
     private readonly Core.OmeZarr.Metadata.OmeXmlMetadata?      _omeXml;              // only for bioformats2raw
@@ -62,6 +63,7 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
 
     private OmeZarrReader(
         IZarrStore  store,
+        bool        ownsStore,
         ZarrGroup   rootGroup,
         OmeAttributesParser.OmeNodeType rootNodeType,
         string?     ngffVersion,
@@ -69,6 +71,7 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
         Core.OmeZarr.Metadata.OmeXmlMetadata?      omeXml = null)
     {
         _store                = store;
+        _ownsStore            = ownsStore;
         _rootGroup            = rootGroup;
         RootNodeType          = rootNodeType;
         NgffVersion           = ngffVersion;
@@ -97,7 +100,7 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
         string            pathOrUrl,
         CancellationToken ct = default)
     {
-        IZarrStore store = CreateStore(pathOrUrl);
+        var (store, ownsStore) = CreateStore(pathOrUrl);
 
         try
         {
@@ -117,12 +120,13 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
                     store, rootGroup, ct).ConfigureAwait(false);
             }
 
-            return new OmeZarrReader(store, rootGroup, nodeType, ngffVersion,
+            return new OmeZarrReader(store, ownsStore, rootGroup, nodeType, ngffVersion,
                     omeGroupAttributes, omeXml);
         }
         catch
         {
-            await store.DisposeAsync().ConfigureAwait(false);
+            if (ownsStore)
+                await store.DisposeAsync().ConfigureAwait(false);
             throw;
         }
     }
@@ -149,7 +153,7 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
                 store, rootGroup, ct).ConfigureAwait(false);
         }
 
-        return new OmeZarrReader(store, rootGroup, nodeType, ngffVersion,
+        return new OmeZarrReader(store, true, rootGroup, nodeType, ngffVersion,
             omeGroupAttributes, omeXml);
     }
 
@@ -179,7 +183,7 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, IZarrStore>
         s_storeCache = new(StringComparer.OrdinalIgnoreCase);
 
-    private static IZarrStore CreateStore(string pathOrUrl)
+    private static (IZarrStore Store, bool OwnsStore) CreateStore(string pathOrUrl)
     {
         // Normalise the key: trim trailing slash so ".../foo/" and ".../foo" share a store.
         var key = pathOrUrl.TrimEnd('/');
@@ -191,13 +195,13 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
              (uriCheck.Scheme != "http" && uriCheck.Scheme != "https")))
         {
             // Local filesystem — always a fresh store (cheap, no pool cost).
-            return new LocalFileSystemStore(
+            return (new LocalFileSystemStore(
                 Uri.TryCreate(pathOrUrl, UriKind.Absolute, out var fileUri) && fileUri.Scheme == "file"
                     ? fileUri.LocalPath
-                    : pathOrUrl);
+                    : pathOrUrl), true);
         }
 
-        return s_storeCache.GetOrAdd(key, _ =>
+        return (s_storeCache.GetOrAdd(key, _ =>
         {
             // s3:// URIs — native S3 SDK store
             if (S3ZarrStore.IsS3Uri(pathOrUrl))
@@ -210,7 +214,7 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
 
             // http:// / https:// — generic HTTP store
             return new HttpZarrStore(pathOrUrl);
-        });
+        }), false);
     }
 
     // -------------------------------------------------------------------------
@@ -476,13 +480,15 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
             return;
 
         _disposed = true;
-        await _store.DisposeAsync().ConfigureAwait(false);
+        if (_ownsStore)
+            await _store.DisposeAsync().ConfigureAwait(false);
     }
     public void Dispose()
     {
         if (_disposed)
             return;
         _disposed = true;
-        _store.DisposeAsync().ConfigureAwait(false);
+        if (_ownsStore)
+            _store.DisposeAsync().ConfigureAwait(false);
     }
 }
