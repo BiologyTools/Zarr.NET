@@ -7,7 +7,6 @@ namespace ZarrNET.Core.Zarr.Store;
 public sealed class LocalFileSystemStore : IZarrStore, IDisposable
 {
     private static int s_debugCount = 0;
-    private static readonly string s_logPath = @"log.txt";
 
     private readonly string _rootPath;
     private bool _disposed;
@@ -174,13 +173,7 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
 
     private static void Log(string message)
     {
-        try
-        {
-            File.AppendAllText(s_logPath, message + Environment.NewLine);
-        }
-        catch
-        {
-        }
+        System.Diagnostics.Debug.WriteLine(message);
     }
 
     private static string SampleBytes(byte[] data, int count = 16)

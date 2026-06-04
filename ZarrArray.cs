@@ -1,7 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using ZarrNET;
-using ZarrNET;
 using ZarrNET.Core.Zarr.Store;
 
 namespace ZarrNET.Core.Zarr;
@@ -24,7 +23,6 @@ public sealed class ZarrArray
     private static int s_readDebugCount = 0;
     private static readonly ConcurrentDictionary<string, byte> s_writePlaneProbeLogged = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, byte> s_readPlaneProbeLogged = new(StringComparer.Ordinal);
-    private static readonly string s_logPath = @"C:\Users\Public\biolog.txt";
 
     private readonly IZarrStore _store;
     private readonly string _arrayPath;   // store-relative path to the array root
@@ -705,13 +703,7 @@ public sealed class ZarrArray
 
     private static void Log(string message)
     {
-        try
-        {
-            File.AppendAllText(s_logPath, message + Environment.NewLine);
-        }
-        catch
-        {
-        }
+        System.Diagnostics.Debug.WriteLine(message);
     }
 
     private static string SampleBytes(byte[] data, int count = 16)
