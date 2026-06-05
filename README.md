@@ -240,6 +240,33 @@ var region = await level.ReadPixelRegionAsync(pixelRegion);
 await level.WriteRegionAsync(pixelRegion, data);
 ```
 
+#### Low-level chunk API
+For larger-than-memory and chunk-native workflows, open the underlying Zarr
+array and work directly with full chunks.
+
+```csharp
+await using var store = new LocalFileSystemStore("/path/to/data.zarr");
+var root = await ZarrGroup.OpenRootAsync(store);
+var array = await root.OpenArrayAsync("0");
+
+await foreach (var chunk in array.EnumerateChunksAsync())
+{
+    // Decoded path: full logical chunk buffer in array order.
+    byte[] decoded = await array.ReadChunkDecodedAsync(chunk);
+    await array.WriteChunkDecodedAsync(chunk, decoded);
+
+    // Encoded path: copy compressed bytes when metadata/codecs are compatible.
+    byte[]? encoded = await array.ReadChunkEncodedAsync(chunk);
+    if (encoded is not null)
+        await array.WriteChunkEncodedAsync(chunk, encoded);
+}
+```
+
+`ZarrChunkRef.Shape` gives the valid in-array extent for edge chunks. Decoded
+chunk buffers are padded to the full effective chunk shape, matching the region
+reader's fill-value behaviour. Encoded chunk access is available for non-sharded
+arrays; sharded arrays store logical chunks inside shard objects.
+
 #### `PlaneResult`
 Result of reading a 2D plane with convenience extraction methods.
 

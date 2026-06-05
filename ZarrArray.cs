@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using ZarrNET;
 using ZarrNET.Core.Zarr.Store;
 
@@ -162,6 +163,126 @@ public sealed class ZarrArray
                 elementSize,
                 ct).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Enumerates every logical chunk in the array's regular chunk grid.
+    /// The returned chunk shape is clamped to the array extent for edge chunks.
+    /// </summary>
+    public async IAsyncEnumerable<ZarrChunkRef> EnumerateChunksAsync(
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        if (Metadata.Shape.Any(s => s == 0))
+            yield break;
+
+        var start = new long[Metadata.Rank];
+        var end = (long[])Metadata.Shape.Clone();
+
+        await foreach (var chunk in EnumerateChunksAsync(start, end, ct).ConfigureAwait(false))
+            yield return chunk;
+    }
+
+    /// <summary>
+    /// Enumerates logical chunks intersecting the region [regionStart, regionEnd).
+    /// The returned chunk shape is clamped to both the array extent and edge chunks,
+    /// but not to the requested region; each reference identifies a whole chunk.
+    /// </summary>
+    public async IAsyncEnumerable<ZarrChunkRef> EnumerateChunksAsync(
+        long[] regionStart,
+        long[] regionEnd,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ValidateRegion(regionStart, regionEnd);
+
+        foreach (var chunkCoord in EnumerateChunkCoordinates(regionStart, regionEnd))
+        {
+            ct.ThrowIfCancellationRequested();
+            yield return BuildChunkRef(chunkCoord);
+        }
+
+        await Task.CompletedTask.ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reads and decodes a full logical chunk without routing through a region
+    /// output buffer. Missing chunks are returned as fill-value chunks.
+    ///
+    /// The returned buffer is padded to the full effective chunk shape used by
+    /// this array. Use <see cref="ZarrChunkRef.Shape"/> to identify the valid
+    /// in-array extent for edge chunks.
+    /// </summary>
+    public async Task<byte[]> ReadChunkDecodedAsync(
+        ZarrChunkRef chunk,
+        CancellationToken ct = default)
+    {
+        ValidateChunkRef(chunk);
+
+        var shardCache = Metadata.Sharding is not null
+            ? new ConcurrentDictionary<string, Task<byte[]?>>(StringComparer.Ordinal)
+            : null;
+
+        return await ReadChunkAsync(chunk.ChunkCoord, shardCache, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Encodes and writes a full logical chunk without read-modify-write.
+    /// The input must be a full effective chunk buffer, including fill-value
+    /// padding for any edge region outside the array extent.
+    /// </summary>
+    public async Task WriteChunkDecodedAsync(
+        ZarrChunkRef chunk,
+        byte[] decodedData,
+        CancellationToken ct = default)
+    {
+        if (Metadata.Sharding is not null)
+            throw new NotSupportedException(
+                "Decoded chunk writes are not supported for sharded arrays.");
+
+        ValidateChunkRef(chunk);
+
+        var expectedBytes = checked((int)(_chunkElementCount * Metadata.DataType.ElementSize));
+        if (decodedData.Length != expectedBytes)
+            throw new ArgumentException(
+                $"decodedData has {decodedData.Length} bytes, expected {expectedBytes} bytes " +
+                $"for full chunk shape [{string.Join(", ", _chunkShapeLong)}].",
+                nameof(decodedData));
+
+        await WriteChunkAsync(chunk.ChunkCoord, decodedData, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reads the encoded bytes for a non-sharded chunk directly from the store.
+    /// Returns null when the chunk key is absent, matching Zarr fill-value
+    /// semantics for sparse chunks.
+    /// </summary>
+    public async Task<byte[]?> ReadChunkEncodedAsync(
+        ZarrChunkRef chunk,
+        CancellationToken ct = default)
+    {
+        EnsureNonShardedEncodedChunkAccess();
+        ValidateChunkRef(chunk);
+
+        var key = BuildChunkContainingStoreKey(chunk.ChunkCoord);
+        return await _store.ReadAsync(key, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes encoded bytes for a non-sharded chunk directly to the store.
+    /// Callers should only use this when the encoded bytes are compatible with
+    /// this array's metadata, chunk shape, dtype, and codec pipeline.
+    /// </summary>
+    public async Task WriteChunkEncodedAsync(
+        ZarrChunkRef chunk,
+        byte[] encodedData,
+        CancellationToken ct = default)
+    {
+        EnsureNonShardedEncodedChunkAccess();
+        ValidateChunkRef(chunk);
+
+        var key = BuildChunkContainingStoreKey(chunk.ChunkCoord);
+        await _store.WriteAsync(key, encodedData, ct).ConfigureAwait(false);
     }
 
     // -------------------------------------------------------------------------
@@ -559,6 +680,37 @@ public sealed class ZarrArray
         return IterateNdCoordinates(firstChunk, lastChunkExclusive, rank);
     }
 
+    private ZarrChunkRef BuildChunkRef(long[] chunkCoord)
+    {
+        var coord = (long[])chunkCoord.Clone();
+        var origin = ComputeChunkOrigin(coord);
+        var shape = ComputeTruncatedChunkShape(coord);
+        var key = BuildChunkContainingStoreKey(coord);
+
+        return new ZarrChunkRef(coord, origin, shape, key);
+    }
+
+    private string BuildChunkContainingStoreKey(long[] chunkCoord)
+    {
+        if (Metadata.Sharding is null)
+            return BuildChunkKey(chunkCoord);
+
+        var shardCoord = ComputeShardCoord(chunkCoord);
+        return BuildChunkKey(shardCoord);
+    }
+
+    private long[] ComputeShardCoord(long[] innerChunkCoord)
+    {
+        var sharding = Metadata.Sharding
+            ?? throw new InvalidOperationException("Array is not sharded.");
+
+        var shardCoord = new long[Metadata.Rank];
+        for (int d = 0; d < Metadata.Rank; d++)
+            shardCoord[d] = innerChunkCoord[d] / sharding.InnerChunksPerShard[d];
+
+        return shardCoord;
+    }
+
     private string BuildChunkKey(long[] chunkCoord)
     {
         var sep = Metadata.ChunkKeySeparator;
@@ -796,5 +948,40 @@ public sealed class ZarrArray
                 throw new ArgumentOutOfRangeException(
                     $"regionEnd[{d}] = {regionEnd[d]} is out of bounds ({regionStart[d]}, {Metadata.Shape[d]}].");
         }
+    }
+
+    private void ValidateChunkRef(ZarrChunkRef chunk)
+    {
+        var rank = Metadata.Rank;
+
+        if (chunk.ChunkCoord.Length != rank)
+            throw new ArgumentException(
+                $"ChunkCoord has {chunk.ChunkCoord.Length} dimensions, expected {rank}.",
+                nameof(chunk));
+
+        var chunkCounts = ComputeChunkCounts();
+        for (int d = 0; d < rank; d++)
+        {
+            if (chunk.ChunkCoord[d] < 0 || chunk.ChunkCoord[d] >= chunkCounts[d])
+                throw new ArgumentOutOfRangeException(
+                    nameof(chunk),
+                    $"ChunkCoord[{d}] = {chunk.ChunkCoord[d]} is out of bounds [0, {chunkCounts[d]}).");
+        }
+    }
+
+    private long[] ComputeChunkCounts()
+    {
+        var counts = new long[Metadata.Rank];
+        for (int d = 0; d < Metadata.Rank; d++)
+            counts[d] = (Metadata.Shape[d] + _chunkShapeLong[d] - 1) / _chunkShapeLong[d];
+        return counts;
+    }
+
+    private void EnsureNonShardedEncodedChunkAccess()
+    {
+        if (Metadata.Sharding is not null)
+            throw new NotSupportedException(
+                "Encoded chunk access is not supported for sharded arrays because " +
+                "logical inner chunks are stored inside shard objects.");
     }
 }
