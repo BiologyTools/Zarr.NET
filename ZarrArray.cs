@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using ZarrNET;
 using ZarrNET.Core.Zarr.Store;
 
@@ -235,6 +236,21 @@ public sealed class ZarrArray
         ZarrChunkRef chunk,
         byte[] decodedData,
         CancellationToken ct = default)
+        => await WriteChunkDecodedAsync(
+            chunk,
+            decodedData.AsMemory(),
+            ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// Encodes and writes a full logical chunk without read-modify-write.
+    /// The input memory length must be the full effective chunk byte count.
+    /// Pooled buffers may be passed as a sliced memory region; the memory is
+    /// consumed or copied before the returned task completes.
+    /// </summary>
+    public async Task WriteChunkDecodedAsync(
+        ZarrChunkRef chunk,
+        ReadOnlyMemory<byte> decodedData,
+        CancellationToken ct = default)
     {
         if (Metadata.Sharding is not null)
             throw new NotSupportedException(
@@ -249,7 +265,10 @@ public sealed class ZarrArray
                 $"for full chunk shape [{string.Join(", ", _chunkShapeLong)}].",
                 nameof(decodedData));
 
-        await WriteChunkAsync(chunk.ChunkCoord, decodedData, ct).ConfigureAwait(false);
+        await WriteChunkAsync(
+            chunk.ChunkCoord,
+            ToExactArray(decodedData),
+            ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -277,12 +296,26 @@ public sealed class ZarrArray
         ZarrChunkRef chunk,
         byte[] encodedData,
         CancellationToken ct = default)
+        => await WriteChunkEncodedAsync(
+            chunk,
+            encodedData.AsMemory(),
+            ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// Writes encoded bytes for a non-sharded chunk directly to the store.
+    /// Pooled buffers may be passed as a sliced memory region; the memory is
+    /// consumed or copied before the returned task completes.
+    /// </summary>
+    public async Task WriteChunkEncodedAsync(
+        ZarrChunkRef chunk,
+        ReadOnlyMemory<byte> encodedData,
+        CancellationToken ct = default)
     {
         EnsureNonShardedEncodedChunkAccess();
         ValidateChunkRef(chunk);
 
         var key = BuildChunkContainingStoreKey(chunk.ChunkCoord);
-        await _store.WriteAsync(key, encodedData, ct).ConfigureAwait(false);
+        await _store.WriteAsync(key, ToExactArray(encodedData), ct).ConfigureAwait(false);
     }
 
     // -------------------------------------------------------------------------
@@ -448,20 +481,6 @@ public sealed class ZarrArray
             Log($"[ZarrArray.WriteChunkAsync] chunk={string.Join(",", chunkCoord)} encodedLen={encoded.Length} " +
                 $"encodedSample={SampleBytes(encoded)}");
             s_writeDebugCount++;
-        }
-
-        try
-        {
-            var roundTrip = await _pipeline.DecodeAsync(encoded, ct).ConfigureAwait(false);
-            if (s_writeDebugCount <= 8)
-            {
-                Log($"[ZarrArray.WriteChunkAsync.RoundTrip] chunk={string.Join(",", chunkCoord)} roundTripLen={roundTrip.Length} " +
-                    $"roundTripSample={SampleBytes(roundTrip)} roundTripU16={SampleU16(roundTrip)}");
-            }
-        }
-        catch (Exception ex)
-        {
-            Log($"[ZarrArray.WriteChunkAsync.RoundTrip] chunk={string.Join(",", chunkCoord)} EXCEPTION {ex.GetType().Name}: {ex.Message}");
         }
 
         await _store.WriteAsync(key, encoded, ct).ConfigureAwait(false);
@@ -852,6 +871,19 @@ public sealed class ZarrArray
 
     private static long ComputeTotalElements(long[] shape)
         => shape.Aggregate(1L, (acc, s) => acc * s);
+
+    private static byte[] ToExactArray(ReadOnlyMemory<byte> data)
+    {
+        if (MemoryMarshal.TryGetArray(data, out ArraySegment<byte> segment) &&
+            segment.Array is not null &&
+            segment.Offset == 0 &&
+            segment.Count == segment.Array.Length)
+        {
+            return segment.Array;
+        }
+
+        return data.ToArray();
+    }
 
     private static void Log(string message)
     {

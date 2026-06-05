@@ -13,10 +13,10 @@ public sealed class ZstdCodec : IZarrCodec
 
     private readonly int _level;
 
-    /// <param name="level">Compression level 1–22. Default 3 matches zstd's default.</param>
+    /// <param name="level">Compression level 0–22. Default 3 matches zstd's default.</param>
     public ZstdCodec(int level = 3)
     {
-        _level = Math.Clamp(level, 1, 22);
+        _level = Math.Clamp(level, 0, 22);
     }
 
     // -------------------------------------------------------------------------
