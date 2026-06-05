@@ -341,6 +341,11 @@ public sealed class OmeZarrWriter : IAsyncDisposable
             {
                 new
                 {
+                    name          = "bytes",
+                    configuration = new { endian = "little" }
+                },
+                new
+                {
                     name          = "blosc",
                     configuration = new
                     {

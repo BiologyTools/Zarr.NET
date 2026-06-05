@@ -60,8 +60,8 @@ public sealed class BytesCodec : IZarrCodec
     /// </summary>
     private static byte[] SwapByteOrder(byte[] input)
     {
-        // Default: swap every 2 bytes (uint16). CodecPipeline sets the real element size
-        // via the overload below before the pipeline runs.
+        // Default only applies if this codec is used directly. CodecPipeline
+        // supplies the real dtype element size through the overload below.
         return SwapByteOrder(input, elementSize: 2);
     }
 
