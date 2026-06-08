@@ -12,12 +12,12 @@
 	<PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
 	<PackageProjectUrl>https://biologytools.github.io/</PackageProjectUrl>
 	<PackageTags>Biology; Microscopy; Whole-Slide-Image; Zarr; OME-Zarr; NGFF;</PackageTags>
-	<PackageReleaseNotes>Refine chunk export and metadata handling.</PackageReleaseNotes>
+	<PackageReleaseNotes>0.6.0: improve chunk export and metadata handling; add stable display-range probing for Zarr-backed images; improve chunk and sample tile generation across pyramid levels; tighten associated image and metadata export; harden raw tile fallback paths and chunk padding; fix Blosc split ordering and offsets; preserve cached remote store lifetimes; and fail fast on short S3 reads.</PackageReleaseNotes>
 	<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 	<Authors>Erik Repo</Authors>
 	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-	<Version>0.5.0</Version>
-	  <PackageVersion>0.5.0</PackageVersion>
+	<Version>0.6.0</Version>
+	  <PackageVersion>0.6.0</PackageVersion>
 	<PackageReadmeFile>README.md</PackageReadmeFile>
 	<PackageIcon>icon.png</PackageIcon>
   </PropertyGroup>
