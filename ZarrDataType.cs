@@ -1,7 +1,7 @@
 namespace ZarrNET;
 
 /// <summary>
-/// Typed representation of a Zarr v3 data type string (e.g. "uint8", "float32").
+/// Typed representation of a Zarr v3 data type string (e.g. "uint8", "float32", "float64").
 /// Resolves element size in bytes and provides type classification used
 /// by the codec pipeline for byte-order handling.
 /// </summary>

@@ -180,11 +180,11 @@ The library is structured in clean, composable layers:
 ## Supported Features
 
 ### Data Types
-- `uint8`, `uint16`, `float32`
+- `uint8`, `uint16`, `float32`, `float64`
 
 The lower-level dtype parser also understands the core fixed-size integer and
-floating-point Zarr dtypes, including v2 NumPy dtype strings such as `"<f4"` and
-v3 data type names such as `"float32"`.
+floating-point Zarr dtypes, including v2 NumPy dtype strings such as `"<f4"` /
+`"<f8"` and v3 data type names such as `"float32"` / `"float64"`.
 
 ### Compression
 - **Gzip** - Standard compression (via System.IO.Compression)

@@ -6,7 +6,7 @@ namespace ZarrNET;
 ///   byteorder: '<' (little), '>' (big), '|' (not applicable)
 ///   typecode:  'u' (uint), 'i' (int), 'f' (float), 'b' (bool)
 ///   size:      number of bytes (1, 2, 4, 8)
-/// Examples: "<u2" → little-endian uint16, ">f4" → big-endian float32, "|u1" → uint8
+/// Examples: "<u2" → little-endian uint16, ">f4" → big-endian float32, "<f8" → float64, "|u1" → uint8
 /// </summary>
 public static class NumpyDtypeParser
 {
