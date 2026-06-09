@@ -12,6 +12,12 @@ namespace ZarrNET.Core;
 // Image descriptor — caller fills this in before handing off to the writer
 // =============================================================================
 
+public enum ZarrCompression
+{
+    BloscLz4,
+    None
+}
+
 /// <summary>
 /// Everything the writer needs to know about a 5D image being saved.
 /// Shape is always interpreted as (T, C, Z, Y, X) in this descriptor.
@@ -21,6 +27,7 @@ public class BioImageDescriptor
 {
     public string Name     { get; init; } = "image";
     public string DataType { get; init; } = "uint16";
+    public ZarrCompression Compression { get; init; } = ZarrCompression.BloscLz4;
 
     public int SizeT { get; }
     public int SizeC { get; }
@@ -337,29 +344,44 @@ public sealed class OmeZarrWriter : IAsyncDisposable
             },
             fill_value      = 0,
             dimension_names = new[] { "t", "c", "z", "y", "x" },
-            codecs          = new object[]
+            codecs          = BuildArrayCodecs(d.Compression, elementSize)
+        };
+
+        await WriteJsonAsync(store, $"{levelIndex}/zarr.json", arrayDoc, ct).ConfigureAwait(false);
+    }
+
+    private static object[] BuildArrayCodecs(ZarrCompression compression, int elementSize)
+    {
+        var bytesCodec = new
+        {
+            name          = "bytes",
+            configuration = new { endian = "little" }
+        };
+
+        return compression switch
+        {
+            ZarrCompression.BloscLz4 => new object[]
             {
-                new
-                {
-                    name          = "bytes",
-                    configuration = new { endian = "little" }
-                },
+                bytesCodec,
                 new
                 {
                     name          = "blosc",
                     configuration = new
                     {
-                        cname    = "lz4",
-                        clevel   = 5,
-                        shuffle  = "byteshuffle",
-                        typesize = elementSize,
-                        blocksize= 0
+                        cname     = "lz4",
+                        clevel    = 5,
+                        shuffle   = "byteshuffle",
+                        typesize  = elementSize,
+                        blocksize = 0
                     }
                 }
-            }
-        };
+            },
 
-        await WriteJsonAsync(store, $"{levelIndex}/zarr.json", arrayDoc, ct).ConfigureAwait(false);
+            ZarrCompression.None => new object[] { bytesCodec },
+
+            _ => throw new NotSupportedException(
+                $"Unsupported Zarr compression option: {compression}.")
+        };
     }
 
     private static async Task WriteJsonAsync(IZarrStore store, string key, object document, CancellationToken ct)
