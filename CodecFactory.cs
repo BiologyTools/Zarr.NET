@@ -26,14 +26,14 @@ public static class CodecFactory
             metadata.Sharding = shardingConfig;
 
             // Return an empty pipeline — ZarrArray will use ShardReader directly
-            return new CodecPipeline(Array.Empty<IZarrCodec>(), metadata.DataType.ElementSize);
+            return new CodecPipeline(Array.Empty<IZarrCodec>(), metadata.DataType.ByteOrderElementSize);
         }
 
         var codecs = metadata.Codecs
             .Select(info => BuildCodec(info))
             .ToList();
 
-        return new CodecPipeline(codecs, metadata.DataType.ElementSize);
+        return new CodecPipeline(codecs, metadata.DataType.ByteOrderElementSize);
     }
 
     // -------------------------------------------------------------------------
@@ -146,7 +146,7 @@ public static class CodecFactory
             : Array.Empty<CodecInfo>();
 
         var innerCodecs = innerCodecInfos.Select(BuildCodec).ToList();
-        var innerPipeline = new CodecPipeline(innerCodecs, metadata.DataType.ElementSize);
+        var innerPipeline = new CodecPipeline(innerCodecs, metadata.DataType.ByteOrderElementSize);
 
         // Index codecs — the pipeline applied to the binary shard index
         var indexCodecInfos = cfg.TryGetProperty("index_codecs", out var indexCodecsProp)
@@ -155,7 +155,7 @@ public static class CodecFactory
 
         var indexCodecs = indexCodecInfos.Select(BuildCodec).ToList();
         // Index entries are uint64 pairs — element size is 8 bytes
-        var indexPipeline = new CodecPipeline(indexCodecs, elementSize: 8);
+        var indexPipeline = new CodecPipeline(indexCodecs, byteOrderElementSize: 8);
 
         // Index location
         var indexLocationStr = cfg.TryGetProperty("index_location", out var locProp)

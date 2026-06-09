@@ -84,9 +84,13 @@ var data  = await level.ReadRegionAsync(roi);
    - v2: `"dtype": "<u2"` → little-endian uint16
    - v2: `"dtype": "<f4"` → little-endian float32
    - v2: `"dtype": "<f8"` → little-endian float64
+   - v2: `"dtype": "<c8"` → little-endian complex64
+   - v2: `"dtype": "<c16"` → little-endian complex128
    - v3: `"data_type": "uint16"` + `"endian": "little"` in bytes codec
    - v3: `"data_type": "float32"` + `"endian": "little"` in bytes codec
    - v3: `"data_type": "float64"` + `"endian": "little"` in bytes codec
+   - v3: `"data_type": "complex64"` + `"endian": "little"` in bytes codec
+   - v3: `"data_type": "complex128"` + `"endian": "little"` in bytes codec
 
 3. **Chunk keys**
    - v2: `0.1.2` (dimension_separator: ".")

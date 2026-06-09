@@ -4,9 +4,9 @@ namespace ZarrNET;
 /// Parses numpy-style dtype strings used in Zarr v2.
 /// Format: [byteorder][typecode][size]
 ///   byteorder: '<' (little), '>' (big), '|' (not applicable)
-///   typecode:  'u' (uint), 'i' (int), 'f' (float), 'b' (bool)
-///   size:      number of bytes (1, 2, 4, 8)
-/// Examples: "<u2" → little-endian uint16, ">f4" → big-endian float32, "<f8" → float64, "|u1" → uint8
+///   typecode:  'u' (uint), 'i' (int), 'f' (float), 'c' (complex), 'b' (bool)
+///   size:      number of bytes (1, 2, 4, 8, 16)
+/// Examples: "<u2" → uint16, ">f4" → big-endian float32, "<c8" → complex64, "<c16" → complex128
 /// </summary>
 public static class NumpyDtypeParser
 {
@@ -62,6 +62,8 @@ public static class NumpyDtypeParser
             ('i', 8) => ZarrDataType.Parse("int64"),
             ('f', 4) => ZarrDataType.Parse("float32"),
             ('f', 8) => ZarrDataType.Parse("float64"),
+            ('c', 8) => ZarrDataType.Parse("complex64"),
+            ('c', 16) => ZarrDataType.Parse("complex128"),
             _        => throw new NotSupportedException(
                             $"Unsupported numpy dtype: type='{typeCode}', size={size} bytes")
         };
