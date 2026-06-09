@@ -8,7 +8,8 @@ namespace ZarrNET;
 ///   Encode: first codec → ... → last codec   (array bytes → compressed bytes)
 ///
 /// The pipeline also resolves byte-order swapping for the BytesCodec based on
-/// the data type element size from ZarrArrayMetadata.
+/// the data type byte-order element size from ZarrArrayMetadata. For complex
+/// dtypes this is the real/imag component size, not the full complex size.
 ///
 /// When all codecs in the pipeline are synchronous (returning completed Tasks),
 /// the decode/encode path avoids async state machine overhead entirely. This is
@@ -17,13 +18,13 @@ namespace ZarrNET;
 public sealed class CodecPipeline
 {
     private readonly IReadOnlyList<IZarrCodec> _codecs;
-    private readonly int _elementSize;
+    private readonly int _byteOrderElementSize;
     private readonly bool _allCodecsSync;
 
-    public CodecPipeline(IReadOnlyList<IZarrCodec> codecs, int elementSize)
+    public CodecPipeline(IReadOnlyList<IZarrCodec> codecs, int byteOrderElementSize)
     {
-        _codecs      = codecs;
-        _elementSize = elementSize;
+        _codecs               = codecs;
+        _byteOrderElementSize = byteOrderElementSize;
 
         // Detect whether every codec in the pipeline is synchronous.
         // Synchronous codecs return Task.FromResult — we identify them by
@@ -116,7 +117,7 @@ public sealed class CodecPipeline
     private byte[] ApplyDecodeStepSync(IZarrCodec codec, byte[] data, CancellationToken ct)
     {
         if (codec is BytesCodec bytesCodec)
-            return bytesCodec.DecodeWithElementSizeAsync(data, _elementSize, ct).GetAwaiter().GetResult();
+            return bytesCodec.DecodeWithElementSizeAsync(data, _byteOrderElementSize, ct).GetAwaiter().GetResult();
 
         // All non-Gzip codecs return completed tasks, so .Result is safe
         return codec.DecodeAsync(data, ct).GetAwaiter().GetResult();
@@ -125,7 +126,7 @@ public sealed class CodecPipeline
     private byte[] ApplyEncodeStepSync(IZarrCodec codec, byte[] data, CancellationToken ct)
     {
         if (codec is BytesCodec bytesCodec)
-            return bytesCodec.EncodeWithElementSizeAsync(data, _elementSize, ct).GetAwaiter().GetResult();
+            return bytesCodec.EncodeWithElementSizeAsync(data, _byteOrderElementSize, ct).GetAwaiter().GetResult();
 
         return codec.EncodeAsync(data, ct).GetAwaiter().GetResult();
     }
@@ -136,16 +137,16 @@ public sealed class CodecPipeline
 
     private Task<byte[]> ApplyDecodeStepAsync(IZarrCodec codec, byte[] data, CancellationToken ct)
     {
-        // BytesCodec needs element size to handle endianness correctly
+        // BytesCodec needs byte-order element size to handle endianness correctly.
         if (codec is BytesCodec bytesCodec)
-            return bytesCodec.DecodeWithElementSizeAsync(data, _elementSize, ct);
+            return bytesCodec.DecodeWithElementSizeAsync(data, _byteOrderElementSize, ct);
         return codec.DecodeAsync(data, ct);
     }
 
     private Task<byte[]> ApplyEncodeStepAsync(IZarrCodec codec, byte[] data, CancellationToken ct)
     {
         if (codec is BytesCodec bytesCodec)
-            return bytesCodec.EncodeWithElementSizeAsync(data, _elementSize, ct);
+            return bytesCodec.EncodeWithElementSizeAsync(data, _byteOrderElementSize, ct);
 
         return codec.EncodeAsync(data, ct);
     }
