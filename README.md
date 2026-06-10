@@ -33,6 +33,10 @@ dotnet build
 - System.Text.Json
 - AWS SDK S3 (for S3 zarr files)
 
+## Documentation
+
+[/Documentation/ZarrNET](https://BiologyTools.github.io/Documentation/ZarrNET/html/index.html)
+
 ## Quick Start
 
 ### Read a single 2D plane from a multiscale image
