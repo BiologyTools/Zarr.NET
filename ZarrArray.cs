@@ -343,7 +343,7 @@ public sealed class ZarrArray
     {
         var key = BuildChunkKey(chunkCoord);
         await s_globalFetchSemaphore.WaitAsync(ct).ConfigureAwait(false);
-        byte[] bytes;
+        byte[]? bytes;
         try
         {
             bytes = await _store.ReadAsync(key, ct).ConfigureAwait(false);

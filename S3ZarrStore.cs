@@ -370,7 +370,7 @@ public sealed class S3ZarrStore : IZarrStore
                 s_metadataCache[cacheKey] = null;
             return null;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             // Fixed: condition was inverted (retry < 3 returned null immediately,
             // then looped forever once retry exceeded 3 because it was an instance
@@ -494,7 +494,7 @@ public sealed class S3ZarrStore : IZarrStore
                     results.Add(relativeKey);
             }
 
-            continuation = response.IsTruncated.Value ? response.NextContinuationToken : null;
+            continuation = response.IsTruncated == true ? response.NextContinuationToken : null;
         }
         while (continuation is not null);
 

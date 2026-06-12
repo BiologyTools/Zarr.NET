@@ -13,7 +13,7 @@ namespace ZarrNET
 {
     public class PropertyReferanceGuide()
     {
-        public static MultiscaleNode image;
+        public static MultiscaleNode image = null!;
         // =============================================================================
         // ResolutionLevelNode - Array-level properties
         // =============================================================================

@@ -233,7 +233,8 @@ public sealed class ResolutionLevelNode
     /// <param name="c">Channel index (0-based).</param>
     /// <param name="z">Z-slice index (0-based).</param>
     /// <param name="ct">Cancellation token.</param>
-    public async Task<RegionResult> ReadTileAsync(
+    /// <returns>The tile region, or null when the tile starts outside the image extent.</returns>
+    public async Task<RegionResult?> ReadTileAsync(
         int tileOriginX,
         int tileOriginY,
         int tileSizeX,

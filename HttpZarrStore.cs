@@ -206,7 +206,7 @@ public sealed class HttpZarrStore : IZarrStore
             _httpClient = CreateDefaultHttpClient();
             goto A;
         }
-        catch (TaskCanceledException ex)
+        catch (TaskCanceledException)
         {
             retry++;
             if (retry >= MaxRetries) return null;
