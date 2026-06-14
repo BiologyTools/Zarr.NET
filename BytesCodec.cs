@@ -52,6 +52,8 @@ public sealed class BytesCodec : IZarrCodec
         => _byteOrder == ByteOrder.BigEndian && BitConverter.IsLittleEndian
         || _byteOrder == ByteOrder.LittleEndian && !BitConverter.IsLittleEndian;
 
+    internal bool IsNoOpForHostByteOrder => !NeedsSwap();
+
     /// <summary>
     /// Reverses byte order for each element. We rely on the element size being
     /// provided by the zarr data type — but BytesCodec at this layer operates on

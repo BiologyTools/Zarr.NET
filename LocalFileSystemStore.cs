@@ -48,7 +48,49 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
         return data;
     }
 
+    public async Task<int?> ReadAsync(string key, Memory<byte> destination, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+
+        var fullPath = ResolveKey(key);
+
+        if (!File.Exists(fullPath))
+            return null;
+
+        var length = checked((int)new FileInfo(fullPath).Length);
+        if (length > destination.Length)
+            throw new ArgumentException(
+                $"Destination has {destination.Length} bytes, but key '{key}' contains {length} bytes.",
+                nameof(destination));
+
+        await using var stream = new FileStream(
+            fullPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 1024 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+        var offset = 0;
+        while (offset < length)
+        {
+            var read = await stream.ReadAsync(destination[offset..length], ct).ConfigureAwait(false);
+            if (read == 0)
+                throw new IOException(
+                    $"Short read for '{fullPath}': expected {length} bytes but received {offset} bytes.");
+
+            offset += read;
+        }
+
+        return length;
+    }
+
     public async Task WriteAsync(string key, byte[] data, CancellationToken ct = default)
+    {
+        await WriteAsync(key, data.AsMemory(), ct).ConfigureAwait(false);
+    }
+
+    public async Task WriteAsync(string key, ReadOnlyMemory<byte> data, CancellationToken ct = default)
     {
         ThrowIfDisposed();
 
@@ -57,7 +99,16 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
 
         Directory.CreateDirectory(directory);
 
-        await File.WriteAllBytesAsync(fullPath, data, ct).ConfigureAwait(false);
+        await using (var stream = new FileStream(
+            fullPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 1024 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan))
+        {
+            await stream.WriteAsync(data, ct).ConfigureAwait(false);
+        }
 
         if (s_debugCount < 16)
         {
@@ -177,5 +228,11 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
     }
 
     private static string SampleBytes(byte[] data, int count = 16)
-        => string.Join(",", data.Take(Math.Min(count, data.Length)));
+        => SampleBytes(data.AsSpan(), count);
+
+    private static string SampleBytes(ReadOnlyMemory<byte> data, int count = 16)
+        => SampleBytes(data.Span, count);
+
+    private static string SampleBytes(ReadOnlySpan<byte> data, int count = 16)
+        => string.Join(",", data[..Math.Min(count, data.Length)].ToArray());
 }

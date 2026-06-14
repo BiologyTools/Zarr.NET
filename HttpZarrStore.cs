@@ -315,6 +315,11 @@ public sealed class HttpZarrStore : IZarrStore
 
     public async Task WriteAsync(string key, byte[] data, CancellationToken ct = default)
     {
+        await WriteAsync(key, data.AsMemory(), ct).ConfigureAwait(false);
+    }
+
+    public Task WriteAsync(string key, ReadOnlyMemory<byte> data, CancellationToken ct = default)
+    {
         ThrowIfDisposed();
 
         throw new NotSupportedException(

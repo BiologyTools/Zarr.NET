@@ -228,6 +228,67 @@ public sealed class ZarrArray
     }
 
     /// <summary>
+    /// Reads a full logical chunk into caller-owned memory. The destination must be
+    /// at least the full effective chunk byte count. When <paramref name="allowBorrowedBuffer"/>
+    /// is true and the codec pipeline is a no-op bytes path, the store may read
+    /// directly into <paramref name="destination"/>.
+    /// </summary>
+    public async Task ReadChunkDecodedAsync(
+        ZarrChunkRef chunk,
+        Memory<byte> destination,
+        bool allowBorrowedBuffer,
+        CancellationToken ct = default)
+    {
+        ValidateChunkRef(chunk);
+
+        var expectedBytes = checked((int)(_chunkElementCount * Metadata.DataType.ElementSize));
+        if (destination.Length < expectedBytes)
+            throw new ArgumentException(
+                $"Destination has {destination.Length} bytes, expected at least {expectedBytes} bytes " +
+                $"for full chunk shape [{string.Join(", ", _chunkShapeLong)}].",
+                nameof(destination));
+
+        var chunkDestination = destination[..expectedBytes];
+
+        if (allowBorrowedBuffer
+            && Metadata.Sharding is null
+            && _pipeline.CanStoreDecodedBytesWithoutTransform)
+        {
+            var key = BuildChunkContainingStoreKey(chunk.ChunkCoord);
+            var bytesRead = await _store.ReadAsync(key, chunkDestination, ct).ConfigureAwait(false);
+
+            if (bytesRead is null)
+            {
+                BuildFillValueChunk().CopyTo(chunkDestination);
+                return;
+            }
+
+            if (bytesRead.Value == expectedBytes)
+                return;
+
+            var normalized = PadOrValidateDecodedChunk(
+                chunkDestination[..bytesRead.Value].ToArray(),
+                chunk.ChunkCoord);
+            normalized.CopyTo(chunkDestination);
+            return;
+        }
+
+        var decoded = await ReadChunkDecodedAsync(chunk, ct).ConfigureAwait(false);
+        decoded.CopyTo(chunkDestination);
+    }
+
+    public Task ReadChunkDecodedAsync(
+        long[] chunkCoord,
+        Memory<byte> destination,
+        bool allowBorrowedBuffer,
+        CancellationToken ct = default)
+        => ReadChunkDecodedAsync(
+            BuildChunkRef(chunkCoord),
+            destination,
+            allowBorrowedBuffer,
+            ct);
+
+    /// <summary>
     /// Encodes and writes a full logical chunk without read-modify-write.
     /// The input must be a full effective chunk buffer, including fill-value
     /// padding for any edge region outside the array extent.
@@ -239,6 +300,7 @@ public sealed class ZarrArray
         => await WriteChunkDecodedAsync(
             chunk,
             decodedData.AsMemory(),
+            allowBorrowedBuffer: false,
             ct).ConfigureAwait(false);
 
     /// <summary>
@@ -250,6 +312,23 @@ public sealed class ZarrArray
     public async Task WriteChunkDecodedAsync(
         ZarrChunkRef chunk,
         ReadOnlyMemory<byte> decodedData,
+        CancellationToken ct = default)
+        => await WriteChunkDecodedAsync(
+            chunk,
+            decodedData,
+            allowBorrowedBuffer: false,
+            ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// Encodes and writes a full logical chunk without read-modify-write.
+    /// When <paramref name="allowBorrowedBuffer"/> is true and the codec pipeline is
+    /// a no-op bytes path, caller-owned memory is consumed directly by the store
+    /// before this task completes.
+    /// </summary>
+    public async Task WriteChunkDecodedAsync(
+        ZarrChunkRef chunk,
+        ReadOnlyMemory<byte> decodedData,
+        bool allowBorrowedBuffer,
         CancellationToken ct = default)
     {
         if (Metadata.Sharding is not null)
@@ -265,11 +344,29 @@ public sealed class ZarrArray
                 $"for full chunk shape [{string.Join(", ", _chunkShapeLong)}].",
                 nameof(decodedData));
 
+        if (allowBorrowedBuffer && _pipeline.CanStoreDecodedBytesWithoutTransform)
+        {
+            var key = BuildChunkContainingStoreKey(chunk.ChunkCoord);
+            await _store.WriteAsync(key, decodedData, ct).ConfigureAwait(false);
+            return;
+        }
+
         await WriteChunkAsync(
             chunk.ChunkCoord,
             ToExactArray(decodedData),
             ct).ConfigureAwait(false);
     }
+
+    public Task WriteChunkDecodedAsync(
+        long[] chunkCoord,
+        ReadOnlyMemory<byte> decodedData,
+        bool allowBorrowedBuffer,
+        CancellationToken ct = default)
+        => WriteChunkDecodedAsync(
+            BuildChunkRef(chunkCoord),
+            decodedData,
+            allowBorrowedBuffer,
+            ct);
 
     /// <summary>
     /// Reads the encoded bytes for a non-sharded chunk directly from the store.
@@ -315,7 +412,7 @@ public sealed class ZarrArray
         ValidateChunkRef(chunk);
 
         var key = BuildChunkContainingStoreKey(chunk.ChunkCoord);
-        await _store.WriteAsync(key, ToExactArray(encodedData), ct).ConfigureAwait(false);
+        await _store.WriteAsync(key, encodedData, ct).ConfigureAwait(false);
     }
 
     // -------------------------------------------------------------------------

@@ -390,15 +390,21 @@ public sealed class S3ZarrStore : IZarrStore
 
     public async Task WriteAsync(string key, byte[] data, CancellationToken ct = default)
     {
+        await WriteAsync(key, data.AsMemory(), ct).ConfigureAwait(false);
+    }
+
+    public async Task WriteAsync(string key, ReadOnlyMemory<byte> data, CancellationToken ct = default)
+    {
         ThrowIfDisposed();
 
         var s3Key = BuildS3Key(key);
+        var bytes = data.ToArray();
 
         var request = new PutObjectRequest
         {
             BucketName  = _bucketName,
             Key         = s3Key,
-            InputStream = new MemoryStream(data)
+            InputStream = new MemoryStream(bytes)
         };
 
         await _s3Client.PutObjectAsync(request, ct).ConfigureAwait(false);
@@ -406,9 +412,9 @@ public sealed class S3ZarrStore : IZarrStore
         // Update caches
         var cacheKey = BuildCacheKey(key);
         if (IsMetadataKey(key))
-            s_metadataCache[cacheKey] = data;
+            s_metadataCache[cacheKey] = bytes;
         else
-            GetChunkCache().Set(cacheKey, data);
+            GetChunkCache().Set(cacheKey, bytes);
     }
 
     // =========================================================================

@@ -33,6 +33,17 @@ public sealed class CodecPipeline
         _allCodecsSync = codecs.All(c => c is not GzipCodec);
     }
 
+    /// <summary>
+    /// True when encoded storage bytes are identical to decoded in-memory array bytes.
+    /// This allows whole-chunk IO to bypass byte-array materialization without
+    /// skipping any Zarr-required transform.
+    /// </summary>
+    public bool CanStoreDecodedBytesWithoutTransform
+        => _codecs.Count == 0
+        || _codecs.Count == 1
+        && _codecs[0] is BytesCodec bytesCodec
+        && bytesCodec.IsNoOpForHostByteOrder;
+
     // -------------------------------------------------------------------------
     // Pipeline execution
     // -------------------------------------------------------------------------
