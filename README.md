@@ -260,6 +260,25 @@ await foreach (var chunk in array.EnumerateChunksAsync())
     byte[] decoded = await array.ReadChunkDecodedAsync(chunk);
     await array.WriteChunkDecodedAsync(chunk, decoded);
 
+    // Caller-owned buffer path for uncompressed/native-endian bytes chunks.
+    byte[] rented = ArrayPool<byte>.Shared.Rent(decoded.Length);
+    try
+    {
+        await array.ReadChunkDecodedAsync(
+            chunk,
+            rented.AsMemory(0, decoded.Length),
+            allowBorrowedBuffer: true);
+
+        await array.WriteChunkDecodedAsync(
+            chunk,
+            rented.AsMemory(0, decoded.Length),
+            allowBorrowedBuffer: true);
+    }
+    finally
+    {
+        ArrayPool<byte>.Shared.Return(rented);
+    }
+
     // Encoded path: copy compressed bytes when metadata/codecs are compatible.
     byte[]? encoded = await array.ReadChunkEncodedAsync(chunk);
     if (encoded is not null)

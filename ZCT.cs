@@ -4,7 +4,7 @@ using System.Text;
 
 namespace ZarrNET.Core
 {
-    public struct ZCT
+    public struct ZCT : IEquatable<ZCT>
     {
         public int Z, C, T;
         public ZCT(int z, int c, int t)
@@ -27,6 +27,22 @@ namespace ZarrNET.Core
             else
                 return true;
         }
+
+        public override bool Equals(object? obj)
+        {
+            return obj is ZCT other && Equals(other);
+        }
+
+        public bool Equals(ZCT other)
+        {
+            return Z == other.Z && C == other.C && T == other.T;
+        }
+
+        public override int GetHashCode()
+        {
+            return HashCode.Combine(Z, C, T);
+        }
+
         public override string ToString()
         {
             return Z + "," + C + "," + T;

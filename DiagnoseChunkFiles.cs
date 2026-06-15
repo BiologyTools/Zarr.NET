@@ -43,8 +43,11 @@ namespace ZarrNET
             if (zarrayExists)
             {
                 var zarrayBytes = await store.ReadAsync(zarrayPath);
-                var zarrayJson = System.Text.Encoding.UTF8.GetString(zarrayBytes);
-                Console.WriteLine($"\n.zarray contents:\n{zarrayJson}");
+                if (zarrayBytes is not null)
+                {
+                    var zarrayJson = System.Text.Encoding.UTF8.GetString(zarrayBytes);
+                    Console.WriteLine($"\n.zarray contents:\n{zarrayJson}");
+                }
             }
 
             // Try to find some actual chunk files

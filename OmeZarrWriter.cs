@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using ZarrNET.Core;
 using ZarrNET;
-using ZarrNET.Core;
 using ZarrNET.Core.Zarr;
 using ZarrNET.Core.Zarr.Store;
 

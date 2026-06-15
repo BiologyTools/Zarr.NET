@@ -206,7 +206,7 @@ public sealed class HttpZarrStore : IZarrStore
             _httpClient = CreateDefaultHttpClient();
             goto A;
         }
-        catch (TaskCanceledException ex)
+        catch (TaskCanceledException)
         {
             retry++;
             if (retry >= MaxRetries) return null;
@@ -314,6 +314,11 @@ public sealed class HttpZarrStore : IZarrStore
     // =====================================================================
 
     public async Task WriteAsync(string key, byte[] data, CancellationToken ct = default)
+    {
+        await WriteAsync(key, data.AsMemory(), ct).ConfigureAwait(false);
+    }
+
+    public Task WriteAsync(string key, ReadOnlyMemory<byte> data, CancellationToken ct = default)
     {
         ThrowIfDisposed();
 
