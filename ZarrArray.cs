@@ -415,6 +415,156 @@ public sealed class ZarrArray
         await _store.WriteAsync(key, encodedData, ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Reads encoded bytes for non-sharded chunks in parallel, bounded by
+    /// <paramref name="maxDegreeOfParallelism"/>. Missing chunk keys are returned
+    /// as absent <see cref="ZarrEncodedChunk"/> values.
+    /// </summary>
+    public async Task<IReadOnlyList<ZarrEncodedChunk>> ReadChunksEncodedAsync(
+        IEnumerable<ZarrChunkRef> chunks,
+        int maxDegreeOfParallelism,
+        CancellationToken ct = default)
+    {
+        EnsureNonShardedEncodedChunkAccess();
+        ArgumentNullException.ThrowIfNull(chunks);
+        ValidateMaxDegreeOfParallelism(maxDegreeOfParallelism);
+
+        var indexedChunks = chunks
+            .Select((chunk, index) => (Chunk: chunk, Index: index))
+            .ToArray();
+        var results = new ZarrEncodedChunk[indexedChunks.Length];
+
+        var options = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = maxDegreeOfParallelism,
+            CancellationToken = ct
+        };
+
+        await Parallel.ForEachAsync(indexedChunks, options, async (item, token) =>
+        {
+            var encoded = await ReadChunkEncodedAsync(item.Chunk, token).ConfigureAwait(false);
+            results[item.Index] = encoded is null
+                ? ZarrEncodedChunk.Missing(item.Chunk)
+                : ZarrEncodedChunk.Present(item.Chunk, encoded);
+        }).ConfigureAwait(false);
+
+        return Array.AsReadOnly(results);
+    }
+
+    public Task<IReadOnlyList<ZarrEncodedChunk>> ReadChunksEncodedAsync(
+        IEnumerable<long[]> chunkCoordinates,
+        int maxDegreeOfParallelism,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(chunkCoordinates);
+        return ReadChunksEncodedAsync(
+            chunkCoordinates.Select(BuildChunkRef),
+            maxDegreeOfParallelism,
+            ct);
+    }
+
+    /// <summary>
+    /// Writes encoded bytes for non-sharded chunks in parallel, bounded by
+    /// <paramref name="maxDegreeOfParallelism"/>. Present chunks are written
+    /// directly with no read-modify-write. Absent chunks are skipped unless
+    /// <paramref name="deleteMissingChunks"/> is true.
+    /// </summary>
+    public async Task WriteChunksEncodedAsync(
+        IEnumerable<ZarrEncodedChunk> chunks,
+        int maxDegreeOfParallelism,
+        bool deleteMissingChunks = false,
+        CancellationToken ct = default)
+    {
+        EnsureNonShardedEncodedChunkAccess();
+        ArgumentNullException.ThrowIfNull(chunks);
+        ValidateMaxDegreeOfParallelism(maxDegreeOfParallelism);
+
+        var options = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = maxDegreeOfParallelism,
+            CancellationToken = ct
+        };
+
+        await Parallel.ForEachAsync(chunks, options, async (chunk, token) =>
+        {
+            ValidateChunkRef(chunk.Chunk);
+
+            var key = BuildChunkContainingStoreKey(chunk.Chunk.ChunkCoord);
+            if (!chunk.IsPresent)
+            {
+                if (deleteMissingChunks)
+                    await _store.DeleteAsync(key, token).ConfigureAwait(false);
+
+                return;
+            }
+
+            await _store.WriteAsync(key, chunk.EncodedBytes, token).ConfigureAwait(false);
+        }).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Copies encoded bytes from this array to <paramref name="destination"/> in
+    /// parallel. Both arrays must be non-sharded and have compatible shape, dtype,
+    /// chunk grid, and codec metadata.
+    /// </summary>
+    public async Task CopyChunksEncodedAsync(
+        ZarrArray destination,
+        IEnumerable<ZarrChunkRef> chunks,
+        int maxDegreeOfParallelism,
+        bool deleteMissingChunks = false,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        ArgumentNullException.ThrowIfNull(chunks);
+        EnsureNonShardedEncodedChunkAccess();
+        destination.EnsureNonShardedEncodedChunkAccess();
+        EnsureEncodedCopyCompatible(destination);
+        ValidateMaxDegreeOfParallelism(maxDegreeOfParallelism);
+
+        var options = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = maxDegreeOfParallelism,
+            CancellationToken = ct
+        };
+
+        await Parallel.ForEachAsync(chunks, options, async (chunk, token) =>
+        {
+            ValidateChunkRef(chunk);
+            var destinationChunk = destination.BuildChunkRef(chunk.ChunkCoord);
+            destination.ValidateChunkRef(destinationChunk);
+
+            var encoded = await ReadChunkEncodedAsync(chunk, token).ConfigureAwait(false);
+            if (encoded is null)
+            {
+                if (deleteMissingChunks)
+                {
+                    var destinationKey = destination.BuildChunkContainingStoreKey(destinationChunk.ChunkCoord);
+                    await destination._store.DeleteAsync(destinationKey, token).ConfigureAwait(false);
+                }
+
+                return;
+            }
+
+            await destination.WriteChunkEncodedAsync(destinationChunk, encoded, token).ConfigureAwait(false);
+        }).ConfigureAwait(false);
+    }
+
+    public Task CopyChunksEncodedAsync(
+        ZarrArray destination,
+        IEnumerable<long[]> chunkCoordinates,
+        int maxDegreeOfParallelism,
+        bool deleteMissingChunks = false,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(chunkCoordinates);
+        return CopyChunksEncodedAsync(
+            destination,
+            chunkCoordinates.Select(BuildChunkRef),
+            maxDegreeOfParallelism,
+            deleteMissingChunks,
+            ct);
+    }
+
     // -------------------------------------------------------------------------
     // Chunk reading / writing
     // -------------------------------------------------------------------------
@@ -1112,5 +1262,57 @@ public sealed class ZarrArray
             throw new NotSupportedException(
                 "Encoded chunk access is not supported for sharded arrays because " +
                 "logical inner chunks are stored inside shard objects.");
+    }
+
+    private static void ValidateMaxDegreeOfParallelism(int maxDegreeOfParallelism)
+    {
+        if (maxDegreeOfParallelism < 1)
+            throw new ArgumentOutOfRangeException(
+                nameof(maxDegreeOfParallelism),
+                maxDegreeOfParallelism,
+                "Maximum degree of parallelism must be at least 1.");
+    }
+
+    private void EnsureEncodedCopyCompatible(ZarrArray destination)
+    {
+        if (!Metadata.Shape.SequenceEqual(destination.Metadata.Shape))
+            throw new InvalidOperationException(
+                "Encoded chunk copy requires source and destination arrays to have the same shape.");
+
+        if (!Metadata.ChunkShape.SequenceEqual(destination.Metadata.ChunkShape))
+            throw new InvalidOperationException(
+                "Encoded chunk copy requires source and destination arrays to have the same chunk shape.");
+
+        if (!string.Equals(
+                Metadata.DataType.TypeString,
+                destination.Metadata.DataType.TypeString,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Encoded chunk copy requires source and destination arrays to have the same data type.");
+        }
+
+        if (!CodecMetadataEquals(Metadata.Codecs, destination.Metadata.Codecs))
+            throw new InvalidOperationException(
+                "Encoded chunk copy requires source and destination arrays to have the same codec metadata.");
+    }
+
+    private static bool CodecMetadataEquals(CodecInfo[] source, CodecInfo[] destination)
+    {
+        if (source.Length != destination.Length)
+            return false;
+
+        for (var i = 0; i < source.Length; i++)
+        {
+            if (!string.Equals(source[i].Name, destination[i].Name, StringComparison.Ordinal))
+                return false;
+
+            var sourceConfiguration = source[i].Configuration?.GetRawText();
+            var destinationConfiguration = destination[i].Configuration?.GetRawText();
+            if (!string.Equals(sourceConfiguration, destinationConfiguration, StringComparison.Ordinal))
+                return false;
+        }
+
+        return true;
     }
 }

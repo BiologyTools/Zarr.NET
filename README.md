@@ -280,12 +280,22 @@ await foreach (var chunk in array.EnumerateChunksAsync())
     if (encoded is not null)
         await array.WriteChunkEncodedAsync(chunk, encoded);
 }
+
+// Bounded parallel encoded copy for same-grid, compatible non-sharded arrays.
+var chunks = new List<ZarrChunkRef>();
+await foreach (var chunk in array.EnumerateChunksAsync())
+    chunks.Add(chunk);
+
+await array.CopyChunksEncodedAsync(destinationArray, chunks, maxDegreeOfParallelism: 8);
 ```
 
 `ZarrChunkRef.Shape` gives the valid in-array extent for edge chunks. Decoded
 chunk buffers are padded to the full effective chunk shape, matching the region
 reader's fill-value behaviour. Encoded chunk access is available for non-sharded
-arrays; sharded arrays store logical chunks inside shard objects.
+arrays; sharded arrays store logical chunks inside shard objects. For callers
+that need direct scheduling, `ReadChunksEncodedAsync` and
+`WriteChunksEncodedAsync` expose the same encoded path with caller-selected
+parallelism.
 
 #### `PlaneResult`
 Result of reading a 2D plane with convenience extraction methods.
