@@ -34,6 +34,9 @@ public sealed class ZarrArray
     // This is the granularity at which ReadRegionAsync iterates and assembles data.
     private readonly long[] _chunkShapeLong;
     private readonly long   _chunkElementCount;
+    private readonly long[] _chunkCounts;
+    private readonly int    _fullChunkByteCount;
+    private readonly bool   _canStoreDecodedBytesWithoutTransform;
 
     public ZarrArrayMetadata Metadata { get; }
 
@@ -50,6 +53,9 @@ public sealed class ZarrArray
 
         _chunkShapeLong = effectiveChunkShape.Select(s => (long)s).ToArray();
         _chunkElementCount = effectiveChunkShape.Aggregate(1L, (acc, s) => acc * s);
+        _chunkCounts = ComputeChunkCounts(_chunkShapeLong);
+        _fullChunkByteCount = checked((int)(_chunkElementCount * Metadata.DataType.ElementSize));
+        _canStoreDecodedBytesWithoutTransform = _pipeline.CanStoreDecodedBytesWithoutTransform;
     }
 
     // -------------------------------------------------------------------------
@@ -241,7 +247,7 @@ public sealed class ZarrArray
     {
         ValidateChunkRef(chunk);
 
-        var expectedBytes = checked((int)(_chunkElementCount * Metadata.DataType.ElementSize));
+        var expectedBytes = _fullChunkByteCount;
         if (destination.Length < expectedBytes)
             throw new ArgumentException(
                 $"Destination has {destination.Length} bytes, expected at least {expectedBytes} bytes " +
@@ -252,7 +258,7 @@ public sealed class ZarrArray
 
         if (allowBorrowedBuffer
             && Metadata.Sharding is null
-            && _pipeline.CanStoreDecodedBytesWithoutTransform)
+            && _canStoreDecodedBytesWithoutTransform)
         {
             var key = BuildChunkContainingStoreKey(chunk.ChunkCoord);
             var bytesRead = await _store.ReadAsync(key, chunkDestination, ct).ConfigureAwait(false);
@@ -337,14 +343,14 @@ public sealed class ZarrArray
 
         ValidateChunkRef(chunk);
 
-        var expectedBytes = checked((int)(_chunkElementCount * Metadata.DataType.ElementSize));
+        var expectedBytes = _fullChunkByteCount;
         if (decodedData.Length != expectedBytes)
             throw new ArgumentException(
                 $"decodedData has {decodedData.Length} bytes, expected {expectedBytes} bytes " +
                 $"for full chunk shape [{string.Join(", ", _chunkShapeLong)}].",
                 nameof(decodedData));
 
-        if (allowBorrowedBuffer && _pipeline.CanStoreDecodedBytesWithoutTransform)
+        if (allowBorrowedBuffer && _canStoreDecodedBytesWithoutTransform)
         {
             var key = BuildChunkContainingStoreKey(chunk.ChunkCoord);
             await _store.WriteAsync(key, decodedData, ct).ConfigureAwait(false);
@@ -387,18 +393,16 @@ public sealed class ZarrArray
         ArgumentNullException.ThrowIfNull(chunks);
         ValidateMaxDegreeOfParallelism(maxDegreeOfParallelism);
 
-        if (allowBorrowedBuffers && _pipeline.CanStoreDecodedBytesWithoutTransform)
+        if (allowBorrowedBuffers && _canStoreDecodedBytesWithoutTransform)
         {
             var writes = new ZarrStoreWrite[chunks.Count];
-            var chunkCounts = ComputeChunkCounts();
-            var expectedBytes = checked((int)(_chunkElementCount * Metadata.DataType.ElementSize));
 
             for (var i = 0; i < chunks.Count; i++)
             {
                 ct.ThrowIfCancellationRequested();
 
                 var chunk = chunks[i];
-                ValidateDecodedChunkWrite(chunk, chunkCounts, expectedBytes);
+                ValidateDecodedChunkWrite(chunk, _chunkCounts, _fullChunkByteCount);
                 writes[i] = new ZarrStoreWrite(
                     GetChunkStoreKey(chunk.Chunk),
                     chunk.DecodedBytes);
@@ -527,7 +531,7 @@ public sealed class ZarrArray
         var writes = new ZarrStoreWrite[chunks.Count];
         var writeCount = 0;
         var missingKeys = deleteMissingChunks ? new List<string>() : null;
-        var chunkCounts = ComputeChunkCounts();
+        var chunkCounts = _chunkCounts;
 
         for (var i = 0; i < chunks.Count; i++)
         {
@@ -1223,7 +1227,7 @@ public sealed class ZarrArray
 
     private void ValidateChunkRef(ZarrChunkRef chunk)
     {
-        ValidateChunkRef(chunk, ComputeChunkCounts());
+        ValidateChunkRef(chunk, _chunkCounts);
     }
 
     private void ValidateChunkRef(ZarrChunkRef chunk, long[] chunkCounts)
@@ -1247,8 +1251,8 @@ public sealed class ZarrArray
     {
         ValidateDecodedChunkWrite(
             chunk,
-            ComputeChunkCounts(),
-            checked((int)(_chunkElementCount * Metadata.DataType.ElementSize)));
+            _chunkCounts,
+            _fullChunkByteCount);
     }
 
     private void ValidateDecodedChunkWrite(
@@ -1271,10 +1275,13 @@ public sealed class ZarrArray
             : chunk.Key;
 
     private long[] ComputeChunkCounts()
+        => ComputeChunkCounts(_chunkShapeLong);
+
+    private long[] ComputeChunkCounts(long[] chunkShape)
     {
         var counts = new long[Metadata.Rank];
         for (int d = 0; d < Metadata.Rank; d++)
-            counts[d] = (Metadata.Shape[d] + _chunkShapeLong[d] - 1) / _chunkShapeLong[d];
+            counts[d] = (Metadata.Shape[d] + chunkShape[d] - 1) / chunkShape[d];
         return counts;
     }
 
