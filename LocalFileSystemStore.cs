@@ -104,7 +104,7 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
         }
     }
 
-    public async Task WriteManyAsync(
+    public Task WriteManyAsync(
         IEnumerable<ZarrStoreWrite> writes,
         int maxDegreeOfParallelism,
         CancellationToken ct = default)
@@ -120,18 +120,20 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
 
         var writeList = writes as IReadOnlyList<ZarrStoreWrite> ?? writes.ToArray();
         var plannedWrites = new LocalWrite[writeList.Count];
-        var directories = new HashSet<string>(StringComparer.Ordinal);
 
         for (var i = 0; i < writeList.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
 
             var write = writeList[i];
-            var fullPath = ResolveKey(write.Key);
-            var directory = Path.GetDirectoryName(fullPath)!;
+            plannedWrites[i] = PlanBatchWrite(write);
+        }
 
-            plannedWrites[i] = new LocalWrite(fullPath, directory, write.Data);
-            directories.Add(directory);
+        var directories = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < plannedWrites.Length; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            directories.Add(plannedWrites[i].Directory);
         }
 
         foreach (var directory in directories)
@@ -146,21 +148,27 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
             CancellationToken = ct
         };
 
-        await Parallel.ForEachAsync(plannedWrites, options, (write, token) =>
-        {
-            token.ThrowIfCancellationRequested();
+        Parallel.For(
+            0,
+            plannedWrites.Length,
+            options,
+            i =>
+            {
+                ct.ThrowIfCancellationRequested();
+                var write = plannedWrites[i];
 
-            using var stream = new FileStream(
-                write.FullPath,
-                FileMode.Create,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 1024 * 1024,
-                FileOptions.SequentialScan);
+                using var stream = new FileStream(
+                    write.FullPath,
+                    FileMode.Create,
+                    FileAccess.Write,
+                    FileShare.None,
+                    bufferSize: 1024 * 1024,
+                    FileOptions.SequentialScan);
 
-            stream.Write(write.Data.Span);
-            return ValueTask.CompletedTask;
-        }).ConfigureAwait(false);
+                stream.Write(write.Data.Span);
+            });
+
+        return Task.CompletedTask;
     }
 
     public Task<bool> ExistsAsync(string key, CancellationToken ct = default)
@@ -231,6 +239,62 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
                 $"Key '{key}' resolves outside the store root. Possible path traversal.");
 
         return fullPath;
+    }
+
+    private LocalWrite PlanBatchWrite(ZarrStoreWrite write)
+    {
+        if (!IsSafeRelativeStoreKey(write.Key))
+        {
+            var resolvedPath = ResolveKey(write.Key);
+            return new LocalWrite(
+                resolvedPath,
+                Path.GetDirectoryName(resolvedPath)!,
+                write.Data);
+        }
+
+        var lastSeparator = write.Key.LastIndexOf('/');
+        var directory =
+            lastSeparator < 0
+                ? _rootPath
+                : Path.Join(_rootPath, write.Key[..lastSeparator]);
+        var fullPath = Path.Join(_rootPath, write.Key);
+
+        return new LocalWrite(fullPath, directory, write.Data);
+    }
+
+    private static bool IsSafeRelativeStoreKey(string key)
+    {
+        if (string.IsNullOrEmpty(key))
+            return false;
+
+        if (key[0] == '/' || key[0] == '\\' || Path.IsPathRooted(key))
+            return false;
+
+        var segmentStart = 0;
+        for (var i = 0; i < key.Length; i++)
+        {
+            var c = key[i];
+            if (c == '\\' || c == ':')
+                return false;
+
+            if (c == '/')
+            {
+                if (IsUnsafePathSegment(key, segmentStart, i))
+                    return false;
+
+                segmentStart = i + 1;
+            }
+        }
+
+        return !IsUnsafePathSegment(key, segmentStart, key.Length);
+    }
+
+    private static bool IsUnsafePathSegment(string key, int start, int end)
+    {
+        var length = end - start;
+        return length == 0 ||
+               length == 1 && key[start] == '.' ||
+               length == 2 && key[start] == '.' && key[start + 1] == '.';
     }
 
     /// <summary>Converts an absolute filesystem path back to a forward-slash store key.</summary>

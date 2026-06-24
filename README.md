@@ -281,13 +281,6 @@ await foreach (var chunk in array.EnumerateChunksAsync())
         await array.WriteChunkEncodedAsync(chunk, encoded);
 }
 
-// Bounded parallel encoded copy for same-grid, compatible non-sharded arrays.
-var chunks = new List<ZarrChunkRef>();
-await foreach (var chunk in array.EnumerateChunksAsync())
-    chunks.Add(chunk);
-
-await array.CopyChunksEncodedAsync(destinationArray, chunks, maxDegreeOfParallelism: 8);
-
 // Bounded parallel decoded writes; no-op bytes pipelines use the local batch fast path.
 IReadOnlyList<ZarrDecodedChunkWrite> decodedWrites = GetPreparedFullChunkWrites();
 await array.WriteChunksDecodedAsync(decodedWrites, maxDegreeOfParallelism: 8, allowBorrowedBuffers: true);

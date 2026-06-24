@@ -375,21 +375,6 @@ public sealed class ZarrArray
     /// path with no encode/copy and no read-modify-write.
     /// </summary>
     public async Task WriteChunksDecodedAsync(
-        IEnumerable<ZarrDecodedChunkWrite> chunks,
-        int maxDegreeOfParallelism,
-        bool allowBorrowedBuffers,
-        CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(chunks);
-        var chunkList = chunks as IReadOnlyList<ZarrDecodedChunkWrite> ?? chunks.ToArray();
-        await WriteChunksDecodedAsync(
-            chunkList,
-            maxDegreeOfParallelism,
-            allowBorrowedBuffers,
-            ct).ConfigureAwait(false);
-    }
-
-    public async Task WriteChunksDecodedAsync(
         IReadOnlyList<ZarrDecodedChunkWrite> chunks,
         int maxDegreeOfParallelism,
         bool allowBorrowedBuffers,
@@ -523,39 +508,12 @@ public sealed class ZarrArray
         return Array.AsReadOnly(results);
     }
 
-    public Task<IReadOnlyList<ZarrEncodedChunk>> ReadChunksEncodedAsync(
-        IEnumerable<long[]> chunkCoordinates,
-        int maxDegreeOfParallelism,
-        CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(chunkCoordinates);
-        return ReadChunksEncodedAsync(
-            chunkCoordinates.Select(BuildChunkRef),
-            maxDegreeOfParallelism,
-            ct);
-    }
-
     /// <summary>
     /// Writes encoded bytes for non-sharded chunks in parallel, bounded by
     /// <paramref name="maxDegreeOfParallelism"/>. Present chunks are written
     /// directly with no read-modify-write. Absent chunks are skipped unless
     /// <paramref name="deleteMissingChunks"/> is true.
     /// </summary>
-    public async Task WriteChunksEncodedAsync(
-        IEnumerable<ZarrEncodedChunk> chunks,
-        int maxDegreeOfParallelism,
-        bool deleteMissingChunks = false,
-        CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(chunks);
-        var chunkList = chunks as IReadOnlyList<ZarrEncodedChunk> ?? chunks.ToArray();
-        await WriteChunksEncodedAsync(
-            chunkList,
-            maxDegreeOfParallelism,
-            deleteMissingChunks,
-            ct).ConfigureAwait(false);
-    }
-
     public async Task WriteChunksEncodedAsync(
         IReadOnlyList<ZarrEncodedChunk> chunks,
         int maxDegreeOfParallelism,
@@ -597,69 +555,6 @@ public sealed class ZarrArray
 
         if (missingKeys is not null && missingKeys.Count > 0)
             await DeleteManyAsync(missingKeys, maxDegreeOfParallelism, ct).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Copies encoded bytes from this array to <paramref name="destination"/> in
-    /// parallel. Both arrays must be non-sharded and have compatible shape, dtype,
-    /// chunk grid, and codec metadata.
-    /// </summary>
-    public async Task CopyChunksEncodedAsync(
-        ZarrArray destination,
-        IEnumerable<ZarrChunkRef> chunks,
-        int maxDegreeOfParallelism,
-        bool deleteMissingChunks = false,
-        CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(destination);
-        ArgumentNullException.ThrowIfNull(chunks);
-        EnsureNonShardedEncodedChunkAccess();
-        destination.EnsureNonShardedEncodedChunkAccess();
-        EnsureEncodedCopyCompatible(destination);
-        ValidateMaxDegreeOfParallelism(maxDegreeOfParallelism);
-
-        var options = new ParallelOptions
-        {
-            MaxDegreeOfParallelism = maxDegreeOfParallelism,
-            CancellationToken = ct
-        };
-
-        await Parallel.ForEachAsync(chunks, options, async (chunk, token) =>
-        {
-            ValidateChunkRef(chunk);
-            var destinationChunk = destination.BuildChunkRef(chunk.ChunkCoord);
-            destination.ValidateChunkRef(destinationChunk);
-
-            var encoded = await ReadChunkEncodedAsync(chunk, token).ConfigureAwait(false);
-            if (encoded is null)
-            {
-                if (deleteMissingChunks)
-                {
-                    var destinationKey = destination.BuildChunkContainingStoreKey(destinationChunk.ChunkCoord);
-                    await destination._store.DeleteAsync(destinationKey, token).ConfigureAwait(false);
-                }
-
-                return;
-            }
-
-            await destination.WriteChunkEncodedAsync(destinationChunk, encoded, token).ConfigureAwait(false);
-        }).ConfigureAwait(false);
-    }
-
-    public Task CopyChunksEncodedAsync(
-        ZarrArray destination,
-        IEnumerable<long[]> chunkCoordinates,
-        int maxDegreeOfParallelism,
-        bool deleteMissingChunks = false,
-        CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(chunkCoordinates);
-        return CopyChunksEncodedAsync(
-            destination,
-            chunkCoordinates.Select(BuildChunkRef),
-            maxDegreeOfParallelism,
-            deleteMissingChunks,
-            ct);
     }
 
     // -------------------------------------------------------------------------
@@ -1398,49 +1293,6 @@ public sealed class ZarrArray
                 nameof(maxDegreeOfParallelism),
                 maxDegreeOfParallelism,
                 "Maximum degree of parallelism must be at least 1.");
-    }
-
-    private void EnsureEncodedCopyCompatible(ZarrArray destination)
-    {
-        if (!Metadata.Shape.SequenceEqual(destination.Metadata.Shape))
-            throw new InvalidOperationException(
-                "Encoded chunk copy requires source and destination arrays to have the same shape.");
-
-        if (!Metadata.ChunkShape.SequenceEqual(destination.Metadata.ChunkShape))
-            throw new InvalidOperationException(
-                "Encoded chunk copy requires source and destination arrays to have the same chunk shape.");
-
-        if (!string.Equals(
-                Metadata.DataType.TypeString,
-                destination.Metadata.DataType.TypeString,
-                StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                "Encoded chunk copy requires source and destination arrays to have the same data type.");
-        }
-
-        if (!CodecMetadataEquals(Metadata.Codecs, destination.Metadata.Codecs))
-            throw new InvalidOperationException(
-                "Encoded chunk copy requires source and destination arrays to have the same codec metadata.");
-    }
-
-    private static bool CodecMetadataEquals(CodecInfo[] source, CodecInfo[] destination)
-    {
-        if (source.Length != destination.Length)
-            return false;
-
-        for (var i = 0; i < source.Length; i++)
-        {
-            if (!string.Equals(source[i].Name, destination[i].Name, StringComparison.Ordinal))
-                return false;
-
-            var sourceConfiguration = source[i].Configuration?.GetRawText();
-            var destinationConfiguration = destination[i].Configuration?.GetRawText();
-            if (!string.Equals(sourceConfiguration, destinationConfiguration, StringComparison.Ordinal))
-                return false;
-        }
-
-        return true;
     }
 
     private async Task DeleteManyAsync(
