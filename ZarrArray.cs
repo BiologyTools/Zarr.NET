@@ -369,6 +369,78 @@ public sealed class ZarrArray
             ct);
 
     /// <summary>
+    /// Writes full decoded logical chunks with bounded concurrency. When
+    /// <paramref name="allowBorrowedBuffers"/> is true and the codec pipeline is
+    /// a no-op bytes path, payloads are written directly through the store batch
+    /// path with no encode/copy and no read-modify-write.
+    /// </summary>
+    public async Task WriteChunksDecodedAsync(
+        IEnumerable<ZarrDecodedChunkWrite> chunks,
+        int maxDegreeOfParallelism,
+        bool allowBorrowedBuffers,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(chunks);
+        var chunkList = chunks as IReadOnlyList<ZarrDecodedChunkWrite> ?? chunks.ToArray();
+        await WriteChunksDecodedAsync(
+            chunkList,
+            maxDegreeOfParallelism,
+            allowBorrowedBuffers,
+            ct).ConfigureAwait(false);
+    }
+
+    public async Task WriteChunksDecodedAsync(
+        IReadOnlyList<ZarrDecodedChunkWrite> chunks,
+        int maxDegreeOfParallelism,
+        bool allowBorrowedBuffers,
+        CancellationToken ct = default)
+    {
+        if (Metadata.Sharding is not null)
+            throw new NotSupportedException(
+                "Decoded chunk writes are not supported for sharded arrays.");
+
+        ArgumentNullException.ThrowIfNull(chunks);
+        ValidateMaxDegreeOfParallelism(maxDegreeOfParallelism);
+
+        if (allowBorrowedBuffers && _pipeline.CanStoreDecodedBytesWithoutTransform)
+        {
+            var writes = new ZarrStoreWrite[chunks.Count];
+            var chunkCounts = ComputeChunkCounts();
+            var expectedBytes = checked((int)(_chunkElementCount * Metadata.DataType.ElementSize));
+
+            for (var i = 0; i < chunks.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var chunk = chunks[i];
+                ValidateDecodedChunkWrite(chunk, chunkCounts, expectedBytes);
+                writes[i] = new ZarrStoreWrite(
+                    GetChunkStoreKey(chunk.Chunk),
+                    chunk.DecodedBytes);
+            }
+
+            await _store.WriteManyAsync(writes, maxDegreeOfParallelism, ct).ConfigureAwait(false);
+            return;
+        }
+
+        var options = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = maxDegreeOfParallelism,
+            CancellationToken = ct
+        };
+
+        await Parallel.ForEachAsync(chunks, options, async (chunk, token) =>
+        {
+            ValidateDecodedChunkWrite(chunk);
+            await WriteChunkDecodedAsync(
+                chunk.Chunk,
+                chunk.DecodedBytes,
+                allowBorrowedBuffer: false,
+                token).ConfigureAwait(false);
+        }).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Reads the encoded bytes for a non-sharded chunk directly from the store.
     /// Returns null when the chunk key is absent, matching Zarr fill-value
     /// semantics for sparse chunks.
@@ -475,31 +547,56 @@ public sealed class ZarrArray
         bool deleteMissingChunks = false,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(chunks);
+        var chunkList = chunks as IReadOnlyList<ZarrEncodedChunk> ?? chunks.ToArray();
+        await WriteChunksEncodedAsync(
+            chunkList,
+            maxDegreeOfParallelism,
+            deleteMissingChunks,
+            ct).ConfigureAwait(false);
+    }
+
+    public async Task WriteChunksEncodedAsync(
+        IReadOnlyList<ZarrEncodedChunk> chunks,
+        int maxDegreeOfParallelism,
+        bool deleteMissingChunks = false,
+        CancellationToken ct = default)
+    {
         EnsureNonShardedEncodedChunkAccess();
         ArgumentNullException.ThrowIfNull(chunks);
         ValidateMaxDegreeOfParallelism(maxDegreeOfParallelism);
 
-        var options = new ParallelOptions
-        {
-            MaxDegreeOfParallelism = maxDegreeOfParallelism,
-            CancellationToken = ct
-        };
+        var writes = new ZarrStoreWrite[chunks.Count];
+        var writeCount = 0;
+        var missingKeys = deleteMissingChunks ? new List<string>() : null;
+        var chunkCounts = ComputeChunkCounts();
 
-        await Parallel.ForEachAsync(chunks, options, async (chunk, token) =>
+        for (var i = 0; i < chunks.Count; i++)
         {
-            ValidateChunkRef(chunk.Chunk);
+            ct.ThrowIfCancellationRequested();
 
-            var key = BuildChunkContainingStoreKey(chunk.Chunk.ChunkCoord);
+            var chunk = chunks[i];
+            ValidateChunkRef(chunk.Chunk, chunkCounts);
+
+            var key = GetChunkStoreKey(chunk.Chunk);
             if (!chunk.IsPresent)
             {
                 if (deleteMissingChunks)
-                    await _store.DeleteAsync(key, token).ConfigureAwait(false);
+                    missingKeys!.Add(key);
 
-                return;
+                continue;
             }
 
-            await _store.WriteAsync(key, chunk.EncodedBytes, token).ConfigureAwait(false);
-        }).ConfigureAwait(false);
+            writes[writeCount++] = new ZarrStoreWrite(key, chunk.EncodedBytes);
+        }
+
+        if (writeCount != writes.Length)
+            Array.Resize(ref writes, writeCount);
+
+        await _store.WriteManyAsync(writes, maxDegreeOfParallelism, ct).ConfigureAwait(false);
+
+        if (missingKeys is not null && missingKeys.Count > 0)
+            await DeleteManyAsync(missingKeys, maxDegreeOfParallelism, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1231,14 +1328,17 @@ public sealed class ZarrArray
 
     private void ValidateChunkRef(ZarrChunkRef chunk)
     {
-        var rank = Metadata.Rank;
+        ValidateChunkRef(chunk, ComputeChunkCounts());
+    }
 
+    private void ValidateChunkRef(ZarrChunkRef chunk, long[] chunkCounts)
+    {
+        var rank = Metadata.Rank;
         if (chunk.ChunkCoord.Length != rank)
             throw new ArgumentException(
                 $"ChunkCoord has {chunk.ChunkCoord.Length} dimensions, expected {rank}.",
                 nameof(chunk));
 
-        var chunkCounts = ComputeChunkCounts();
         for (int d = 0; d < rank; d++)
         {
             if (chunk.ChunkCoord[d] < 0 || chunk.ChunkCoord[d] >= chunkCounts[d])
@@ -1247,6 +1347,33 @@ public sealed class ZarrArray
                     $"ChunkCoord[{d}] = {chunk.ChunkCoord[d]} is out of bounds [0, {chunkCounts[d]}).");
         }
     }
+
+    private void ValidateDecodedChunkWrite(ZarrDecodedChunkWrite chunk)
+    {
+        ValidateDecodedChunkWrite(
+            chunk,
+            ComputeChunkCounts(),
+            checked((int)(_chunkElementCount * Metadata.DataType.ElementSize)));
+    }
+
+    private void ValidateDecodedChunkWrite(
+        ZarrDecodedChunkWrite chunk,
+        long[] chunkCounts,
+        int expectedBytes)
+    {
+        ValidateChunkRef(chunk.Chunk, chunkCounts);
+
+        if (chunk.DecodedBytes.Length != expectedBytes)
+            throw new ArgumentException(
+                $"DecodedBytes has {chunk.DecodedBytes.Length} bytes, expected {expectedBytes} bytes " +
+                $"for full chunk shape [{string.Join(", ", _chunkShapeLong)}].",
+                nameof(chunk));
+    }
+
+    private string GetChunkStoreKey(ZarrChunkRef chunk)
+        => string.IsNullOrEmpty(chunk.Key)
+            ? BuildChunkContainingStoreKey(chunk.ChunkCoord)
+            : chunk.Key;
 
     private long[] ComputeChunkCounts()
     {
@@ -1314,5 +1441,22 @@ public sealed class ZarrArray
         }
 
         return true;
+    }
+
+    private async Task DeleteManyAsync(
+        IReadOnlyList<string> keys,
+        int maxDegreeOfParallelism,
+        CancellationToken ct)
+    {
+        var options = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = maxDegreeOfParallelism,
+            CancellationToken = ct
+        };
+
+        await Parallel.ForEachAsync(keys, options, async (key, token) =>
+        {
+            await _store.DeleteAsync(key, token).ConfigureAwait(false);
+        }).ConfigureAwait(false);
     }
 }

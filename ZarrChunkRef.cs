@@ -28,3 +28,10 @@ public readonly record struct ZarrEncodedChunk(
     public static ZarrEncodedChunk Missing(ZarrChunkRef chunk)
         => new(chunk, ReadOnlyMemory<byte>.Empty, IsPresent: false);
 }
+
+/// <summary>
+/// Decoded full-chunk payload for one logical Zarr chunk.
+/// </summary>
+public readonly record struct ZarrDecodedChunkWrite(
+    ZarrChunkRef Chunk,
+    ReadOnlyMemory<byte> DecodedBytes);

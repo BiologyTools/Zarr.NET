@@ -1,6 +1,14 @@
 namespace ZarrNET.Core.Zarr.Store;
 
 /// <summary>
+/// Raw key/value write request for a Zarr store.
+/// Implementations must consume Data before WriteManyAsync returns.
+/// </summary>
+public readonly record struct ZarrStoreWrite(
+    string Key,
+    ReadOnlyMemory<byte> Data);
+
+/// <summary>
 /// Pure key/value store abstraction. Keys are forward-slash-separated paths
 /// relative to the store root (e.g. "0/0.0.0", "labels/nuclei/zarr.json").
 /// No Zarr semantics live here — this is infrastructure only.
@@ -35,6 +43,36 @@ public interface IZarrStore : IAsyncDisposable
     /// </summary>
     Task WriteAsync(string key, ReadOnlyMemory<byte> data, CancellationToken ct = default)
         => WriteAsync(key, data.ToArray(), ct);
+
+    /// <summary>
+    /// Writes several raw key/value payloads with bounded concurrency. The default
+    /// implementation delegates to WriteAsync for each item; stores may override
+    /// this to optimize local batching.
+    /// </summary>
+    async Task WriteManyAsync(
+        IEnumerable<ZarrStoreWrite> writes,
+        int maxDegreeOfParallelism,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(writes);
+
+        if (maxDegreeOfParallelism < 1)
+            throw new ArgumentOutOfRangeException(
+                nameof(maxDegreeOfParallelism),
+                maxDegreeOfParallelism,
+                "Maximum degree of parallelism must be at least 1.");
+
+        var options = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = maxDegreeOfParallelism,
+            CancellationToken = ct
+        };
+
+        await Parallel.ForEachAsync(writes, options, async (write, token) =>
+        {
+            await WriteAsync(write.Key, write.Data, token).ConfigureAwait(false);
+        }).ConfigureAwait(false);
+    }
 
     /// <summary>Returns true if the key exists in the store.</summary>
     Task<bool> ExistsAsync(string key, CancellationToken ct = default);

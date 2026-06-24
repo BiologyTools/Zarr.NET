@@ -104,6 +104,65 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
         }
     }
 
+    public async Task WriteManyAsync(
+        IEnumerable<ZarrStoreWrite> writes,
+        int maxDegreeOfParallelism,
+        CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(writes);
+
+        if (maxDegreeOfParallelism < 1)
+            throw new ArgumentOutOfRangeException(
+                nameof(maxDegreeOfParallelism),
+                maxDegreeOfParallelism,
+                "Maximum degree of parallelism must be at least 1.");
+
+        var writeList = writes as IReadOnlyList<ZarrStoreWrite> ?? writes.ToArray();
+        var plannedWrites = new LocalWrite[writeList.Count];
+        var directories = new HashSet<string>(StringComparer.Ordinal);
+
+        for (var i = 0; i < writeList.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var write = writeList[i];
+            var fullPath = ResolveKey(write.Key);
+            var directory = Path.GetDirectoryName(fullPath)!;
+
+            plannedWrites[i] = new LocalWrite(fullPath, directory, write.Data);
+            directories.Add(directory);
+        }
+
+        foreach (var directory in directories)
+        {
+            ct.ThrowIfCancellationRequested();
+            Directory.CreateDirectory(directory);
+        }
+
+        var options = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = maxDegreeOfParallelism,
+            CancellationToken = ct
+        };
+
+        await Parallel.ForEachAsync(plannedWrites, options, (write, token) =>
+        {
+            token.ThrowIfCancellationRequested();
+
+            using var stream = new FileStream(
+                write.FullPath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 1024 * 1024,
+                FileOptions.SequentialScan);
+
+            stream.Write(write.Data.Span);
+            return ValueTask.CompletedTask;
+        }).ConfigureAwait(false);
+    }
+
     public Task<bool> ExistsAsync(string key, CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -196,4 +255,9 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
         if (_disposed)
             throw new ObjectDisposedException(nameof(LocalFileSystemStore));
     }
+
+    private readonly record struct LocalWrite(
+        string FullPath,
+        string Directory,
+        ReadOnlyMemory<byte> Data);
 }
