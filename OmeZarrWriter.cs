@@ -207,6 +207,12 @@ public sealed class OmeZarrWriter : IAsyncDisposable
     /// Writes a single Z-plane into the array at level 0.
     /// </summary>
     public async Task WritePlaneAsync(int zIndex, byte[] planeData, CancellationToken ct = default)
+        => await WritePlaneAsync(zIndex, planeData.AsMemory(), ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// Writes a single Z-plane into the array at level 0.
+    /// </summary>
+    public async Task WritePlaneAsync(int zIndex, ReadOnlyMemory<byte> planeData, CancellationToken ct = default)
     {
         ThrowIfDisposed();
         var d           = _descriptor;
@@ -235,6 +241,23 @@ public sealed class OmeZarrWriter : IAsyncDisposable
         int    yOffset, int xOffset,
         int    height,  int width,
         byte[] data,
+        int    levelIndex    = 0,
+        CancellationToken ct = default)
+        => await WriteRegionAsync(t, c, z, yOffset, xOffset, height, width, data.AsMemory(), levelIndex, ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// Writes an arbitrary sub-region into the 5D array at
+    /// <paramref name="levelIndex"/> (0 = full resolution).
+    ///
+    /// Thread-safe: many callers may call this concurrently; the internal
+    /// semaphore limits simultaneous in-flight store writes to
+    /// <see cref="MaxConcurrentWrites"/>.
+    /// </summary>
+    public async Task WriteRegionAsync(
+        int    t,       int c,      int z,
+        int    yOffset, int xOffset,
+        int    height,  int width,
+        ReadOnlyMemory<byte> data,
         int    levelIndex    = 0,
         CancellationToken ct = default)
     {

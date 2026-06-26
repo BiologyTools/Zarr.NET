@@ -1,3 +1,5 @@
+using ZarrNET.Core.Zarr;
+
 namespace ZarrNET.Core.Zarr.Store;
 
 /// <summary>
@@ -171,6 +173,74 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
         return Task.CompletedTask;
     }
 
+    internal Task WriteDecodedChunksAsync(
+        IReadOnlyList<ZarrDecodedChunkWrite> chunks,
+        Func<ZarrChunkRef, string> keySelector,
+        int maxDegreeOfParallelism,
+        CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(chunks);
+        ArgumentNullException.ThrowIfNull(keySelector);
+
+        if (maxDegreeOfParallelism < 1)
+            throw new ArgumentOutOfRangeException(
+                nameof(maxDegreeOfParallelism),
+                maxDegreeOfParallelism,
+                "Maximum degree of parallelism must be at least 1.");
+
+        var plannedWrites = new LocalWrite[chunks.Count];
+
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var chunk = chunks[i];
+            plannedWrites[i] = PlanBatchWrite(keySelector(chunk.Chunk), chunk.DecodedBytes);
+        }
+
+        var directories = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < plannedWrites.Length; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            directories.Add(plannedWrites[i].Directory);
+        }
+
+        foreach (var directory in directories)
+        {
+            ct.ThrowIfCancellationRequested();
+            Directory.CreateDirectory(directory);
+        }
+
+        var options = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = maxDegreeOfParallelism,
+            CancellationToken = ct
+        };
+
+        Parallel.For(
+            0,
+            plannedWrites.Length,
+            options,
+            i =>
+            {
+                ct.ThrowIfCancellationRequested();
+                var write = plannedWrites[i];
+
+                using var stream = new FileStream(
+                    write.FullPath,
+                    FileMode.Create,
+                    FileAccess.Write,
+                    FileShare.None,
+                    bufferSize: 1024 * 1024,
+                    FileOptions.SequentialScan);
+
+                stream.Write(write.Data.Span);
+            });
+
+        return Task.CompletedTask;
+    }
+
     public Task<bool> ExistsAsync(string key, CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -242,24 +312,27 @@ public sealed class LocalFileSystemStore : IZarrStore, IDisposable
     }
 
     private LocalWrite PlanBatchWrite(ZarrStoreWrite write)
+        => PlanBatchWrite(write.Key, write.Data);
+
+    private LocalWrite PlanBatchWrite(string key, ReadOnlyMemory<byte> data)
     {
-        if (!IsSafeRelativeStoreKey(write.Key))
+        if (!IsSafeRelativeStoreKey(key))
         {
-            var resolvedPath = ResolveKey(write.Key);
+            var resolvedPath = ResolveKey(key);
             return new LocalWrite(
                 resolvedPath,
                 Path.GetDirectoryName(resolvedPath)!,
-                write.Data);
+                data);
         }
 
-        var lastSeparator = write.Key.LastIndexOf('/');
+        var lastSeparator = key.LastIndexOf('/');
         var directory =
             lastSeparator < 0
                 ? _rootPath
-                : Path.Join(_rootPath, write.Key[..lastSeparator]);
-        var fullPath = Path.Join(_rootPath, write.Key);
+                : Path.Join(_rootPath, key[..lastSeparator]);
+        var fullPath = Path.Join(_rootPath, key);
 
-        return new LocalWrite(fullPath, directory, write.Data);
+        return new LocalWrite(fullPath, directory, data);
     }
 
     private static bool IsSafeRelativeStoreKey(string key)

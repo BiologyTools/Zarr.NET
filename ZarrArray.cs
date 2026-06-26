@@ -144,6 +144,18 @@ public sealed class ZarrArray
         long[] regionEnd,
         byte[] data,
         CancellationToken ct = default)
+        => await WriteRegionAsync(regionStart, regionEnd, data.AsMemory(), ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// Writes a region of the array defined by per-axis [start, end) ranges.
+    /// Data must be flat bytes matching the region shape exactly.
+    /// Performs read-modify-write for partial chunk writes.
+    /// </summary>
+    public async Task WriteRegionAsync(
+        long[] regionStart,
+        long[] regionEnd,
+        ReadOnlyMemory<byte> data,
+        CancellationToken ct = default)
     {
         ValidateRegion(regionStart, regionEnd);
 
@@ -395,20 +407,37 @@ public sealed class ZarrArray
 
         if (allowBorrowedBuffers && _canStoreDecodedBytesWithoutTransform)
         {
-            var writes = new ZarrStoreWrite[chunks.Count];
+            var chunkCounts = _chunkCounts;
+            var fullChunkByteCount = _fullChunkByteCount;
 
             for (var i = 0; i < chunks.Count; i++)
             {
                 ct.ThrowIfCancellationRequested();
-
-                var chunk = chunks[i];
-                ValidateDecodedChunkWrite(chunk, _chunkCounts, _fullChunkByteCount);
-                writes[i] = new ZarrStoreWrite(
-                    GetChunkStoreKey(chunk.Chunk),
-                    chunk.DecodedBytes);
+                ValidateDecodedChunkWrite(chunks[i], chunkCounts, fullChunkByteCount);
             }
 
-            await _store.WriteManyAsync(writes, maxDegreeOfParallelism, ct).ConfigureAwait(false);
+            if (_store is LocalFileSystemStore localStore)
+            {
+                await localStore.WriteDecodedChunksAsync(
+                    chunks,
+                    static chunk => chunk.Key,
+                    maxDegreeOfParallelism,
+                    ct).ConfigureAwait(false);
+            }
+            else
+            {
+                var writes = new ZarrStoreWrite[chunks.Count];
+
+                for (var i = 0; i < chunks.Count; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var chunk = chunks[i];
+                    writes[i] = new ZarrStoreWrite(chunk.Chunk.Key, chunk.DecodedBytes);
+                }
+
+                await _store.WriteManyAsync(writes, maxDegreeOfParallelism, ct).ConfigureAwait(false);
+            }
+
             return;
         }
 
@@ -734,7 +763,7 @@ public sealed class ZarrArray
         long[] regionStart,
         long[] regionEnd,
         long[] regionShape,
-        byte[] sourceData,
+        ReadOnlyMemory<byte> sourceData,
         int elementSize,
         CancellationToken ct)
     {
@@ -745,7 +774,7 @@ public sealed class ZarrArray
         var clampedEnd = ClampToChunk(regionEnd, chunkOrigin, _chunkShapeLong, clampToStart: false);
 
         CopyNdRegion(
-            src: sourceData,
+            src: sourceData.Span,
             srcOrigin: regionStart,
             srcShape: regionShape,
             dst: chunkData,
@@ -758,15 +787,15 @@ public sealed class ZarrArray
         if (s_writeDebugCount < 8)
         {
             Log($"[ZarrArray.WriteChunkRegionAsync] chunk={string.Join(",", chunkCoord)} srcShape={string.Join("x", regionShape)} " +
-                $"chunkOrigin={string.Join(",", chunkOrigin)} srcSample={SampleBytes(sourceData)} chunkSample={SampleBytes(chunkData)} " +
-                $"srcU16={SampleU16(sourceData)} chunkU16={SampleU16(chunkData)}");
+                $"chunkOrigin={string.Join(",", chunkOrigin)} srcSample={SampleBytes(sourceData.Span)} chunkSample={SampleBytes(chunkData)} " +
+                $"srcU16={SampleU16(sourceData.Span)} chunkU16={SampleU16(chunkData)}");
         }
 
         if (ShouldLogPlaneProbe(chunkCoord, s_writePlaneProbeLogged))
         {
             Log($"[ZarrArray.WriteChunkRegionAsync.Probe] chunk={string.Join(",", chunkCoord)} srcShape={string.Join("x", regionShape)} " +
-                $"chunkOrigin={string.Join(",", chunkOrigin)} srcSample={SampleBytes(sourceData)} chunkSample={SampleBytes(chunkData)} " +
-                $"srcU16={SampleU16(sourceData)} chunkU16={SampleU16(chunkData)}");
+                $"chunkOrigin={string.Join(",", chunkOrigin)} srcSample={SampleBytes(sourceData.Span)} chunkSample={SampleBytes(chunkData)} " +
+                $"srcU16={SampleU16(sourceData.Span)} chunkU16={SampleU16(chunkData)}");
         }
 
         await WriteChunkAsync(chunkCoord, chunkData, ct).ConfigureAwait(false);
@@ -828,10 +857,10 @@ public sealed class ZarrArray
     /// coordinate array — no per-element heap allocations.
     /// </summary>
     private static void CopyNdRegion(
-        byte[] src,
+        ReadOnlySpan<byte> src,
         long[] srcOrigin,
         long[] srcShape,
-        byte[] dst,
+        Span<byte> dst,
         long[] dstOrigin,
         long[] dstShape,
         long[] copyStart,
@@ -856,7 +885,7 @@ public sealed class ZarrArray
         {
             var srcByteOffset = (int)((copyStart[0] - srcOrigin[0]) * srcStrides[0] * elementSize);
             var dstByteOffset = (int)((copyStart[0] - dstOrigin[0]) * dstStrides[0] * elementSize);
-            Buffer.BlockCopy(src, srcByteOffset, dst, dstByteOffset, rowBytes);
+            src.Slice(srcByteOffset, rowBytes).CopyTo(dst.Slice(dstByteOffset, rowBytes));
             return;
         }
 
@@ -882,7 +911,7 @@ public sealed class ZarrArray
             var srcByteOffset = (int)(srcElement * elementSize);
             var dstByteOffset = (int)(dstElement * elementSize);
 
-            Buffer.BlockCopy(src, srcByteOffset, dst, dstByteOffset, rowBytes);
+            src.Slice(srcByteOffset, rowBytes).CopyTo(dst.Slice(dstByteOffset, rowBytes));
 
             // Advance outer coordinates (last outer axis first, C order)
             int axis = outerRank - 1;
@@ -1133,10 +1162,15 @@ public sealed class ZarrArray
         System.Diagnostics.Debug.WriteLine(message);
     }
 
-    private static string SampleBytes(byte[] data, int count = 16)
-        => string.Join(",", data.Take(Math.Min(count, data.Length)));
+    private static string SampleBytes(ReadOnlySpan<byte> data, int count = 16)
+    {
+        var n = Math.Min(count, data.Length);
+        var values = new byte[n];
+        data[..n].CopyTo(values);
+        return string.Join(",", values);
+    }
 
-    private static string SampleU16(byte[] data, int count = 8)
+    private static string SampleU16(ReadOnlySpan<byte> data, int count = 8)
     {
         if (data.Length < 2)
             return string.Empty;
@@ -1144,7 +1178,7 @@ public sealed class ZarrArray
         int n = Math.Min(count, data.Length / 2);
         var vals = new ushort[n];
         for (int i = 0; i < n; i++)
-            vals[i] = BitConverter.ToUInt16(data, i * 2);
+            vals[i] = (ushort)(data[i * 2] | (data[i * 2 + 1] << 8));
         return string.Join(",", vals);
     }
 
