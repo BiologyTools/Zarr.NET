@@ -284,12 +284,20 @@ await foreach (var chunk in array.EnumerateChunksAsync())
     if (encoded is not null)
         await array.WriteChunkEncodedAsync(chunk, encoded);
 }
+
+// Bounded parallel decoded writes; no-op bytes pipelines use the local batch fast path.
+IReadOnlyList<ZarrDecodedChunkWrite> decodedWrites = GetPreparedFullChunkWrites();
+await array.WriteChunksDecodedAsync(decodedWrites, maxDegreeOfParallelism: 8, allowBorrowedBuffers: true);
 ```
 
 `ZarrChunkRef.Shape` gives the valid in-array extent for edge chunks. Decoded
 chunk buffers are padded to the full effective chunk shape, matching the region
 reader's fill-value behaviour. Encoded chunk access is available for non-sharded
-arrays; sharded arrays store logical chunks inside shard objects.
+arrays; sharded arrays store logical chunks inside shard objects. For callers
+that need direct scheduling, `ReadChunksEncodedAsync` and
+`WriteChunksEncodedAsync` expose the same encoded path with caller-selected
+parallelism. `WriteChunksDecodedAsync` provides the analogous full-chunk decoded
+write path and can bypass encoding for native-endian bytes-only pipelines.
 
 #### `PlaneResult`
 Result of reading a 2D plane with convenience extraction methods.
