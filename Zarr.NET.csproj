@@ -12,20 +12,20 @@
 	<PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
 	<PackageProjectUrl>https://biologytools.github.io/</PackageProjectUrl>
 	<PackageTags>Biology; Microscopy; Whole-Slide-Image; Zarr; OME-Zarr; NGFF;</PackageTags>
-	<PackageReleaseNotes>0.6.1: add complex64 and complex128 dtype support for Zarr v3 and v2 NumPy dtype parsing; fix byte-order handling for complex data in the codec pipeline; add optional uncompressed OME-Zarr writes for speed testing; and document the expanded dtype and compression support in the README and v2 support guide.</PackageReleaseNotes>
+	<PackageReleaseNotes>OME-Zarr coordinate, support for Zarr transformations like translation. Also region write handling and performance increases.</PackageReleaseNotes>
 	<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 	<Authors>Erik Repo</Authors>
 	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-	<Version>0.6.1</Version>
-	  <PackageVersion>0.6.1</PackageVersion>
+	<Version>0.7.0</Version>
+	  <PackageVersion>0.7.0</PackageVersion>
 	<PackageReadmeFile>README.md</PackageReadmeFile>
 	<PackageIcon>icon.png</PackageIcon>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="AWSSDK.Core" Version="4.0.3.15" />
-    <PackageReference Include="AWSSDK.S3" Version="4.0.18.7" />
+    <PackageReference Include="AWSSDK.Core" Version="4.0.100.6" />
+    <PackageReference Include="AWSSDK.S3" Version="4.0.101.3" />
     <PackageReference Include="K4os.Compression.LZ4" Version="1.3.8" />
-    <PackageReference Include="ZstdSharp.Port" Version="0.8.7" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
   </ItemGroup>
   <ItemGroup>
     <None Update="icon.png">
