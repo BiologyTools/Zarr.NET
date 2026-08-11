@@ -76,7 +76,7 @@ public sealed class CoordinateTransformService
     public double[] GetPixelSize(DatasetMetadata dataset, MultiscaleMetadata multiscale)
     {
         var composedTransforms   = ComposeTransforms(dataset, multiscale);
-        var (scale, _)           = FlattenToScaleTranslation(composedTransforms, multiscale.Axes.Length);
+        var (scale, _)           = FlattenToScaleTranslation(composedTransforms, multiscale.GetIntrinsicAxes().Length);
         return scale;
     }
 
@@ -129,10 +129,20 @@ public sealed class CoordinateTransformService
                     ApplyTranslation(transform, composedTranslation, rank);
                     break;
 
+                case "sequence":
+                    var nested = FlattenToScaleTranslation(transform.Transformations, rank);
+                    for (int d = 0; d < rank; d++)
+                    {
+                        composedTranslation[d] = nested.Scale[d] * composedTranslation[d]
+                            + nested.Translation[d];
+                        composedScale[d] *= nested.Scale[d];
+                    }
+                    break;
+
                 default:
                     throw new NotSupportedException(
                         $"Coordinate transform type '{transform.Type}' is not supported. " +
-                        $"Supported types: scale, translation, identity.");
+                        $"Supported types: scale, translation, identity, sequence.");
             }
         }
 

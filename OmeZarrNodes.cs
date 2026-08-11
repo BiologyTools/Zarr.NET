@@ -142,8 +142,9 @@ public sealed class ResolutionLevelNode
             if (_effectiveAxes is not null)
                 return _effectiveAxes;
 
-            if (Multiscale.Axes.Length > 0)
-                return _effectiveAxes = Multiscale.Axes;
+            var intrinsicAxes = Multiscale.GetIntrinsicAxes();
+            if (intrinsicAxes.Length > 0)
+                return _effectiveAxes = intrinsicAxes;
 
             // OME-Zarr v0.1/v0.2 files carry no explicit axes field.
             // The conventional axis order is the suffix of (t, c, z, y, x).

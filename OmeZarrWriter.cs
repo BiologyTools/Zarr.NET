@@ -294,6 +294,8 @@ public sealed class OmeZarrWriter : IAsyncDisposable
                 new
                 {
                     type  = "scale",
+                    input = new { path = i.ToString() },
+                    output = new { name = "physical" },
                     scale = new[]
                     {
                         1.0, 1.0,
@@ -307,21 +309,23 @@ public sealed class OmeZarrWriter : IAsyncDisposable
 
         var multiscale = new
         {
-            version = "0.5",
             name    = d.Name,
-            axes    = new object[]
+            coordinateSystems = new object[]
             {
-                new { name = "t", type = "time"    },
-                new { name = "c", type = "channel" },
-                new { name = "z", type = "space", unit = "micrometer" },
-                new { name = "y", type = "space", unit = "micrometer" },
-                new { name = "x", type = "space", unit = "micrometer" }
+                new
+                {
+                    name = "physical",
+                    axes = new object[]
+                    {
+                        new { name = "t", type = "time" },
+                        new { name = "c", type = "channel", discrete = true },
+                        new { name = "z", type = "space", unit = "micrometer" },
+                        new { name = "y", type = "space", unit = "micrometer" },
+                        new { name = "x", type = "space", unit = "micrometer" }
+                    }
+                }
             },
-            datasets                  = datasets,
-            coordinateTransformations = new object[]
-            {
-                new { type = "scale", scale = new[] { 1.0, 1.0, d.PhysicalSizeZ, d.PhysicalSizeY, d.PhysicalSizeX } }
-            }
+            datasets = datasets
         };
 
         var rootDoc = new
@@ -330,7 +334,7 @@ public sealed class OmeZarrWriter : IAsyncDisposable
             node_type   = "group",
             attributes  = new
             {
-                ome = new { version = "0.5", multiscales = new[] { multiscale } }
+                ome = new { version = "0.6rc0", multiscales = new[] { multiscale } }
             }
         };
 

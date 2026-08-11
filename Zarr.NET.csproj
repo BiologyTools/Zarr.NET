@@ -16,8 +16,8 @@
 	<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 	<Authors>Erik Repo</Authors>
 	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-	<Version>0.7.0</Version>
-	  <PackageVersion>0.7.0</PackageVersion>
+	<Version>0.8.0</Version>
+	  <PackageVersion>0.8.0</PackageVersion>
 	<PackageReadmeFile>README.md</PackageReadmeFile>
 	<PackageIcon>icon.png</PackageIcon>
   </PropertyGroup>

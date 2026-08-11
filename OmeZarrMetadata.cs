@@ -17,9 +17,38 @@ public sealed class MultiscaleMetadata
     public string?             Name       { get; init; }
     public string?             Type       { get; init; }
     public AxisMetadata[]      Axes       { get; init; } = Array.Empty<AxisMetadata>();
+    /// <summary>Named coordinate systems introduced by OME-NGFF 0.6.</summary>
+    public CoordinateSystemMetadata[] CoordinateSystems { get; init; }
+        = Array.Empty<CoordinateSystemMetadata>();
     public DatasetMetadata[]   Datasets   { get; init; } = Array.Empty<DatasetMetadata>();
     public CoordinateTransformation[]? CoordinateTransformations { get; init; }
     public OmeMetadata?        Omero      { get; init; }
+
+    /// <summary>
+    /// Gets the intrinsic coordinate-system axes. Older metadata exposes these
+    /// directly through <see cref="Axes"/>.
+    /// </summary>
+    public AxisMetadata[] GetIntrinsicAxes()
+    {
+        if (CoordinateSystems.Length == 0)
+            return Axes;
+
+        var intrinsicName = Datasets.SelectMany(d => d.CoordinateTransformations)
+            .Select(t => t.Output?.Name)
+            .FirstOrDefault(n => !string.IsNullOrWhiteSpace(n));
+        var intrinsic = intrinsicName is null
+            ? CoordinateSystems[0]
+            : CoordinateSystems.FirstOrDefault(c => c.Name == intrinsicName);
+
+        return intrinsic?.Axes ?? CoordinateSystems[0].Axes;
+    }
+}
+
+/// <summary>A named coordinate system in OME-NGFF 0.6 metadata.</summary>
+public sealed class CoordinateSystemMetadata
+{
+    public string Name { get; init; } = string.Empty;
+    public AxisMetadata[] Axes { get; init; } = Array.Empty<AxisMetadata>();
 }
 
 /// <summary>
@@ -30,6 +59,8 @@ public sealed class AxisMetadata
     public string  Name { get; init; } = string.Empty;
     public string? Type { get; init; }   // "space" | "time" | "channel"
     public string? Unit { get; init; }   // "micrometer" | "nanometer" | "millisecond" etc.
+    public bool? Discrete { get; init; }
+    public string? LongName { get; init; }
 }
 
 /// <summary>
@@ -57,6 +88,21 @@ public sealed class CoordinateTransformation
     public double[]? Scale       { get; init; }
     public double[]? Translation { get; init; }
     public string?   Path        { get; init; }  // for "path" type transformations
+    public string? Name { get; init; }
+    public CoordinateSystemReference? Input { get; init; }
+    public CoordinateSystemReference? Output { get; init; }
+    public double[][]? Affine { get; init; }
+    public double[][]? Rotation { get; init; }
+    public int[]? MapAxis { get; init; }
+    public CoordinateTransformation[] Transformations { get; init; }
+        = Array.Empty<CoordinateTransformation>();
+}
+
+/// <summary>References a coordinate system by name and optional relative path.</summary>
+public sealed class CoordinateSystemReference
+{
+    public string? Name { get; init; }
+    public string? Path { get; init; }
 }
 
 // =============================================================================

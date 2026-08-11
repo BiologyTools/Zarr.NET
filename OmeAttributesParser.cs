@@ -258,6 +258,8 @@ public static class OmeAttributesParser
             Name     = json.Name,
             Type     = json.Type,
             Axes     = json.Axes?.Select(ToAxisMetadata).ToArray() ?? Array.Empty<AxisMetadata>(),
+            CoordinateSystems = json.CoordinateSystems?.Select(ToCoordinateSystemMetadata).ToArray()
+                ?? Array.Empty<CoordinateSystemMetadata>(),
             Datasets = json.Datasets?.Select(ToDatasetMetadata).ToArray() ?? Array.Empty<DatasetMetadata>(),
             CoordinateTransformations = json.CoordinateTransformations?
                 .Select(ToCoordinateTransformation).ToArray(),
@@ -265,7 +267,18 @@ public static class OmeAttributesParser
         };
 
     private static AxisMetadata ToAxisMetadata(AxisMetadataJson json) =>
-        new() { Name = json.Name ?? string.Empty, Type = json.Type, Unit = json.Unit };
+        new()
+        {
+            Name = json.Name ?? string.Empty, Type = json.Type, Unit = json.Unit,
+            Discrete = json.Discrete, LongName = json.LongName
+        };
+
+    private static CoordinateSystemMetadata ToCoordinateSystemMetadata(CoordinateSystemMetadataJson json) =>
+        new()
+        {
+            Name = json.Name ?? string.Empty,
+            Axes = json.Axes?.Select(ToAxisMetadata).ToArray() ?? Array.Empty<AxisMetadata>()
+        };
 
     private static DatasetMetadata ToDatasetMetadata(DatasetMetadataJson json) =>
         new()
@@ -281,8 +294,19 @@ public static class OmeAttributesParser
             Type        = json.Type ?? string.Empty,
             Scale       = json.Scale,
             Translation = json.Translation,
-            Path        = json.Path
+            Path        = json.Path,
+            Name        = json.Name,
+            Input       = ToCoordinateSystemReference(json.Input),
+            Output      = ToCoordinateSystemReference(json.Output),
+            Affine      = json.Affine,
+            Rotation    = json.Rotation,
+            MapAxis     = json.MapAxis,
+            Transformations = json.Transformations?.Select(ToCoordinateTransformation).ToArray()
+                ?? Array.Empty<CoordinateTransformation>()
         };
+
+    private static CoordinateSystemReference? ToCoordinateSystemReference(CoordinateSystemReferenceJson? json) =>
+        json is null ? null : new CoordinateSystemReference { Name = json.Name, Path = json.Path };
 
     private static OmeMetadata ToOmeMetadata(OmeMetadataJson json) =>
         new()
@@ -321,6 +345,8 @@ public static class OmeAttributesParser
         [JsonPropertyName("name")]        public string? Name     { get; init; }
         [JsonPropertyName("type")]        public string? Type     { get; init; }
         [JsonPropertyName("axes")]        public AxisMetadataJson[]? Axes { get; init; }
+        [JsonPropertyName("coordinateSystems")]
+        public CoordinateSystemMetadataJson[]? CoordinateSystems { get; init; }
         [JsonPropertyName("datasets")]    public DatasetMetadataJson[]? Datasets { get; init; }
         [JsonPropertyName("coordinateTransformations")]
         public CoordinateTransformationJson[]? CoordinateTransformations { get; init; }
@@ -332,6 +358,14 @@ public static class OmeAttributesParser
         [JsonPropertyName("name")] public string? Name { get; init; }
         [JsonPropertyName("type")] public string? Type { get; init; }
         [JsonPropertyName("unit")] public string? Unit { get; init; }
+        [JsonPropertyName("discrete")] public bool? Discrete { get; init; }
+        [JsonPropertyName("longName")] public string? LongName { get; init; }
+    }
+
+    private sealed class CoordinateSystemMetadataJson
+    {
+        [JsonPropertyName("name")] public string? Name { get; init; }
+        [JsonPropertyName("axes")] public AxisMetadataJson[]? Axes { get; init; }
     }
 
     /// <summary>
@@ -355,7 +389,8 @@ public static class OmeAttributesParser
                 throw new JsonException(
                     $"Unexpected token {reader.TokenType} reading AxisMetadataJson.");
 
-            string? name = null, type = null, unit = null;
+            string? name = null, type = null, unit = null, longName = null;
+            bool? discrete = null;
 
             while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
             {
@@ -370,11 +405,16 @@ public static class OmeAttributesParser
                     case "name": name = reader.GetString(); break;
                     case "type": type = reader.GetString(); break;
                     case "unit": unit = reader.GetString(); break;
+                    case "discrete": discrete = reader.GetBoolean(); break;
+                    case "longname": longName = reader.GetString(); break;
                     default:     reader.Skip();             break;
                 }
             }
 
-            return new AxisMetadataJson { Name = name, Type = type, Unit = unit };
+            return new AxisMetadataJson
+            {
+                Name = name, Type = type, Unit = unit, Discrete = discrete, LongName = longName
+            };
         }
 
         public override void Write(
@@ -386,6 +426,8 @@ public static class OmeAttributesParser
             if (value.Name is not null) writer.WriteString("name", value.Name);
             if (value.Type is not null) writer.WriteString("type", value.Type);
             if (value.Unit is not null) writer.WriteString("unit", value.Unit);
+            if (value.Discrete is not null) writer.WriteBoolean("discrete", value.Discrete.Value);
+            if (value.LongName is not null) writer.WriteString("longName", value.LongName);
             writer.WriteEndObject();
         }
     }
@@ -400,9 +442,23 @@ public static class OmeAttributesParser
     private sealed class CoordinateTransformationJson
     {
         [JsonPropertyName("type")]        public string?   Type        { get; init; }
+        [JsonPropertyName("name")]        public string?   Name        { get; init; }
         [JsonPropertyName("scale")]       public double[]? Scale       { get; init; }
         [JsonPropertyName("translation")] public double[]? Translation { get; init; }
         [JsonPropertyName("path")]        public string?   Path        { get; init; }
+        [JsonPropertyName("input")] public CoordinateSystemReferenceJson? Input { get; init; }
+        [JsonPropertyName("output")] public CoordinateSystemReferenceJson? Output { get; init; }
+        [JsonPropertyName("affine")] public double[][]? Affine { get; init; }
+        [JsonPropertyName("rotation")] public double[][]? Rotation { get; init; }
+        [JsonPropertyName("mapAxis")] public int[]? MapAxis { get; init; }
+        [JsonPropertyName("transformations")]
+        public CoordinateTransformationJson[]? Transformations { get; init; }
+    }
+
+    private sealed class CoordinateSystemReferenceJson
+    {
+        [JsonPropertyName("name")] public string? Name { get; init; }
+        [JsonPropertyName("path")] public string? Path { get; init; }
     }
 
     private sealed class PlateMetadataJson
