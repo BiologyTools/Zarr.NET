@@ -301,8 +301,33 @@ public static class OmeAttributesParser
             Affine      = json.Affine,
             Rotation    = json.Rotation,
             MapAxis     = json.MapAxis,
+            CreatedOutputs = json.CreatedOutputs,
+            DroppedInputs  = json.DroppedInputs,
+            Interpolation  = json.Interpolation,
             Transformations = json.Transformations?.Select(ToCoordinateTransformation).ToArray()
-                ?? Array.Empty<CoordinateTransformation>()
+                ?? Array.Empty<CoordinateTransformation>(),
+            ByDimensionTransformations = json.Transformations?.Select(ToByDimensionTransformation).ToArray()
+                ?? Array.Empty<ByDimensionTransformation>(),
+            Forward = json.Forward is null ? null : ToCoordinateTransformation(json.Forward),
+            Inverse = json.Inverse is null ? null : ToCoordinateTransformation(json.Inverse)
+        };
+
+    private static CoordinateTransformation ToCoordinateTransformation(JsonElement json) =>
+        ToCoordinateTransformation(JsonSerializer.Deserialize<CoordinateTransformationJson>(json.GetRawText(), _options)
+            ?? throw new InvalidOperationException("Invalid nested coordinate transformation."));
+
+    private static ByDimensionTransformation ToByDimensionTransformation(JsonElement json) =>
+        ToByDimensionTransformation(JsonSerializer.Deserialize<ByDimensionTransformationJson>(json.GetRawText(), _options)
+            ?? throw new InvalidOperationException("Invalid byDimension transformation entry."));
+
+    private static ByDimensionTransformation ToByDimensionTransformation(ByDimensionTransformationJson json) =>
+        new()
+        {
+            InputAxes = json.InputAxes ?? Array.Empty<int>(),
+            OutputAxes = json.OutputAxes ?? Array.Empty<int>(),
+            Transformation = json.Transformation is null
+                ? throw new InvalidOperationException("byDimension entry is missing 'transformation'.")
+                : ToCoordinateTransformation(json.Transformation)
         };
 
     private static CoordinateSystemReference? ToCoordinateSystemReference(CoordinateSystemReferenceJson? json) =>
@@ -451,8 +476,20 @@ public static class OmeAttributesParser
         [JsonPropertyName("affine")] public double[][]? Affine { get; init; }
         [JsonPropertyName("rotation")] public double[][]? Rotation { get; init; }
         [JsonPropertyName("mapAxis")] public int[]? MapAxis { get; init; }
+        [JsonPropertyName("createdOutputs")] public int[]? CreatedOutputs { get; init; }
+        [JsonPropertyName("droppedInputs")] public int[]? DroppedInputs { get; init; }
+        [JsonPropertyName("interpolation")] public string? Interpolation { get; init; }
         [JsonPropertyName("transformations")]
-        public CoordinateTransformationJson[]? Transformations { get; init; }
+        public JsonElement[]? Transformations { get; init; }
+        [JsonPropertyName("forward")] public CoordinateTransformationJson? Forward { get; init; }
+        [JsonPropertyName("inverse")] public CoordinateTransformationJson? Inverse { get; init; }
+    }
+
+    private sealed class ByDimensionTransformationJson
+    {
+        [JsonPropertyName("inputAxes")] public int[]? InputAxes { get; init; }
+        [JsonPropertyName("outputAxes")] public int[]? OutputAxes { get; init; }
+        [JsonPropertyName("transformation")] public CoordinateTransformationJson? Transformation { get; init; }
     }
 
     private sealed class CoordinateSystemReferenceJson

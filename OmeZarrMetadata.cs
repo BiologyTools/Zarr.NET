@@ -94,8 +94,23 @@ public sealed class CoordinateTransformation
     public double[][]? Affine { get; init; }
     public double[][]? Rotation { get; init; }
     public int[]? MapAxis { get; init; }
+    public int[]? CreatedOutputs { get; init; }
+    public int[]? DroppedInputs { get; init; }
+    public string? Interpolation { get; init; }
     public CoordinateTransformation[] Transformations { get; init; }
         = Array.Empty<CoordinateTransformation>();
+    public ByDimensionTransformation[] ByDimensionTransformations { get; init; }
+        = Array.Empty<ByDimensionTransformation>();
+    public CoordinateTransformation? Forward { get; init; }
+    public CoordinateTransformation? Inverse { get; init; }
+}
+
+/// <summary>A component transformation operating on selected axes of a byDimension transform.</summary>
+public sealed class ByDimensionTransformation
+{
+    public int[] InputAxes { get; init; } = Array.Empty<int>();
+    public int[] OutputAxes { get; init; } = Array.Empty<int>();
+    public CoordinateTransformation Transformation { get; init; } = new();
 }
 
 /// <summary>References a coordinate system by name and optional relative path.</summary>

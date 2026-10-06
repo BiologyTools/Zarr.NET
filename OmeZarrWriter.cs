@@ -334,7 +334,7 @@ public sealed class OmeZarrWriter : IAsyncDisposable
             node_type   = "group",
             attributes  = new
             {
-                ome = new { version = "0.6rc0", multiscales = new[] { multiscale } }
+                ome = new { version = "0.6", multiscales = new[] { multiscale } }
             }
         };
 

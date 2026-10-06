@@ -5,9 +5,10 @@ A high-performance, fully async C# library for reading and writing OME-Zarr data
 ## Features
 
 ✅ **Zarr v2 & v3 Support** - Automatic version detection and handling  
-✅ **OME-Zarr 0.4, 0.5 & 0.6rc0** - Multiscale images, labels, and HCS plates; 0.6 coordinate-system metadata is supported
+✅ **OME-Zarr 0.4, 0.5 & 0.6** - Multiscale images, labels, and HCS plates; 0.6 coordinate-system metadata is supported
 ✅ **Remote Access** - Read from HTTP/HTTPS, S3  
 ✅ **Physical Coordinates** - ROI reading in real-world units (micrometers, seconds, etc.)  
+✅ **OME-Zarr 0.6 Transform Metadata** - Coordinate systems plus parsed and evaluable closed-form transforms
 ✅ **Compression** - Blosc, Gzip, Zstandard (zstd) codec support  
 ✅ **Memory Efficient** - Chunk-level reading with streaming support  
 ✅ **Type Safe** - Strongly typed metadata models and coordinate transformations  
@@ -207,6 +208,44 @@ floating-point Zarr dtypes, including v2 NumPy dtype strings such as `"<f4"` /
 - **Zarr v2** - `.zarray`, `.zattrs`, `.zgroup` files (widely used by Fiji, napari, OMERO)
 - **Zarr v3** - Single `zarr.json` per node (newer spec)
 - Automatic version detection and handling
+
+### OME-Zarr 0.6 transformations
+
+OME-Zarr 0.6 coordinate systems, transform endpoints, and nested transformation
+metadata are retained in the typed API. The point evaluator supports the
+closed-form transform types `identity`, `scale`, `translation`, `mapAxis`,
+`projectAxis`, `affine`, `rotation`, `sequence`, `byDimension`, and
+`bijection`.
+
+```csharp
+using ZarrNET.Core.OmeZarr.Coordinates;
+
+var level = await image.OpenResolutionLevelAsync(datasetIndex: 0);
+var transform = level.Dataset.CoordinateTransformations[0];
+
+// Apply an inline transform to a physical point.
+double[] output = CoordinateTransformationEvaluator.TransformForward(
+    transform, [12.5, 48.0]);
+```
+
+Affine and rotation matrices may be stored inline or in a separate Zarr array.
+Resolve array-backed parameters before evaluating the transform:
+
+```csharp
+var resolved = await TransformParameterResolver.ResolveMatrixAsync(
+    reader.RootGroup,
+    transform,
+    inputRank: 2,
+    outputRank: 2);
+
+double[] output = CoordinateTransformationEvaluator.TransformForward(
+    resolved, [12.5, 48.0]);
+```
+
+The existing `ReadRegionAsync(PhysicalROI)` path supports the standard
+multiscale mappings: identity, scale, translation, and sequences of those
+operations. Arbitrary affine/rotation transforms currently operate on points;
+image resampling is tracked in the roadmap below.
 
 ## API Overview
 
@@ -470,10 +509,11 @@ for (int y = 0; y < height; y += tileSize)
 ```
 
 ## Limitations
-- **Sharded Zarr v3** - Not yet supported (planned).
 - **HTTP store listing** - ListChildNamesAsync() not supported for HTTP stores. Use explicit path navigation.
 - **Write support to HTTP** - Read-only for remote stores. Use LocalFileSystemStore for writing.
-- **Full dataset creation** - Basic region writing works, but no complete writer API yet.
+- **Transform vector fields** - `coordinates` and `displacements` transforms require vector-field sampling and interpolation, which is not yet implemented.
+- **Transform-aware image resampling** - Affine, rotation, dimensional projection, and vector-field transforms can be evaluated for points but are not yet applied while reading/resampling image pixels.
+- **Scene transformation graphs** - Cross-image scene metadata and automatic transform-path discovery are not yet implemented.
 
 ## Roadmap
 
@@ -481,10 +521,15 @@ for (int y = 0; y < height; y += tileSize)
 - [x] Blosc codec support
 - [x] AWS S3 native SDK integration (ListObjects, credentials)
 - [x] Sharded Zarr v3 support
-- [ ] OME-Zarr writer API for creating new datasets
+- [x] OME-Zarr writer API for creating new datasets
 - [x] Parallel chunk reading for improved performance
 - [ ] Zarr v2 → v3 conversion utilities
-- [ ] NGFF transformations support (rotation, affine)
+- [x] OME-Zarr 0.6 coordinate systems and standard multiscale transforms
+- [x] Closed-form 0.6 point transforms: affine, rotation, axis mapping, projection, sequences, by-dimension, and bijections
+- [x] Array-backed affine and rotation parameter matrices
+- [ ] Vector-field `coordinates` and `displacements` transforms with nearest/linear interpolation
+- [ ] Transformation-aware image/ROI resampling for affine, rotation, projection, and vector-field transforms
+- [ ] Scene metadata and cross-image transformation-graph traversal
 - [ ] Consolidated metadata (.zmetadata) support for HTTP stores
 
 ## Contributing
