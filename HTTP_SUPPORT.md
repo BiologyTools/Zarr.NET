@@ -62,9 +62,8 @@ var plane = await level.ReadPlaneAsync(t: 0, c: 0, z: 0);
 ### HTTP Requests
 - **Read** - GET request, returns null on 404
 - **Exists** - HEAD request for efficiency
-- **List** - Not supported (throws NotSupportedException)
-  - HTTP doesn't have standard directory listing
-  - Future: could support consolidated metadata (.zmetadata)
+- **List** - Available when the store provides v2 `.zmetadata` or v3 inline consolidated metadata
+  - HTTP itself has no standard directory listing, so stores without consolidated metadata still throw `NotSupportedException`
 - **Write/Delete** - Not supported (read-only)
 
 ### Metadata Caching
@@ -145,7 +144,7 @@ Console.WriteLine($"Loaded remote image: {image.Multiscales[0].Name}");
 ## Future Enhancements
 
 ### Planned
-- [ ] Consolidated metadata (.zmetadata) support for listing
+- [x] Consolidated metadata (`.zmetadata` and v3 inline) support for listing
 - [ ] Parallel chunk downloading
 - [ ] HTTP range requests for partial chunks
 - [ ] AWS SDK integration (proper credentials, ListObjects)

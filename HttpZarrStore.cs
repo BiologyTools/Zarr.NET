@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Text.Json;
 
 namespace ZarrNET.Core.Zarr.Store;
 
@@ -29,6 +30,7 @@ public sealed class HttpZarrStore : IZarrStore
     private HttpClient _httpClient;
     private readonly string _baseUrl;
     private readonly bool _ownsHttpClient;
+    private Task<IReadOnlyList<string>?>? _consolidatedKeysTask;
     private bool _disposed;
 
     /// <summary>
@@ -330,11 +332,63 @@ public sealed class HttpZarrStore : IZarrStore
     public async Task<IReadOnlyList<string>> ListAsync(string prefix = "", CancellationToken ct = default)
     {
         ThrowIfDisposed();
+        var keys = await GetConsolidatedKeysAsync(ct).ConfigureAwait(false);
+        if (keys is null)
+            throw new NotSupportedException(
+                "Listing keys in HTTP Zarr stores requires consolidated metadata. " +
+                "Neither '.zmetadata' nor inline 'consolidated_metadata' was found.");
 
-        throw new NotSupportedException(
-            "Listing keys in HTTP Zarr stores is not supported. " +
-            "HTTP/S3 stores require explicit path navigation. " +
-            "Use HasChildAsync() to check for specific children, or enable consolidated metadata.");
+        var normalizedPrefix = prefix.Trim('/');
+        if (!string.IsNullOrEmpty(normalizedPrefix)) normalizedPrefix += "/";
+        return keys.Where(key => key.StartsWith(normalizedPrefix, StringComparison.Ordinal))
+            .OrderBy(key => key, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private Task<IReadOnlyList<string>?> GetConsolidatedKeysAsync(CancellationToken ct)
+    {
+        // A consolidated index describes immutable metadata for the lifetime of
+        // a reader. Share the single fetch across repeated directory listings.
+        _consolidatedKeysTask ??= LoadConsolidatedKeysAsync(CancellationToken.None);
+        return _consolidatedKeysTask.WaitAsync(ct);
+    }
+
+    private async Task<IReadOnlyList<string>?> LoadConsolidatedKeysAsync(CancellationToken ct)
+    {
+        // Zarr v2's standard consolidated metadata lives at the root.
+        var v2Metadata = await ReadAsync(".zmetadata", ct).ConfigureAwait(false);
+        var v2Keys = ParseConsolidatedKeys(v2Metadata, "metadata");
+        if (v2Keys is not null) return v2Keys;
+
+        // Zarr v3 permits inline metadata in the root group zarr.json.
+        var rootMetadata = await ReadAsync("zarr.json", ct).ConfigureAwait(false);
+        return ParseConsolidatedKeys(rootMetadata, "consolidated_metadata", "metadata");
+    }
+
+    private static IReadOnlyList<string>? ParseConsolidatedKeys(byte[]? document, params string[] path)
+    {
+        if (document is null) return null;
+        try
+        {
+            using var json = JsonDocument.Parse(document);
+            var element = json.RootElement;
+            foreach (var segment in path)
+            {
+                if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(segment, out element))
+                    return null;
+            }
+            if (element.ValueKind != JsonValueKind.Object) return null;
+
+            return element.EnumerateObject()
+                .Select(property => property.Name.TrimStart('/'))
+                .Where(IsMetadataKey)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     public Task DeleteAsync(string key, CancellationToken ct = default)

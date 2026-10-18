@@ -9,7 +9,7 @@ A high-performance, fully async C# library for reading and writing OME-Zarr data
 ✅ **Remote Access** - Read from HTTP/HTTPS, S3  
 ✅ **Physical Coordinates** - ROI reading in real-world units (micrometers, seconds, etc.)  
 ✅ **OME-Zarr 0.6 Transform Metadata** - Coordinate systems plus parsed and evaluable closed-form transforms
-✅ **Compression** - Blosc, Gzip, Zstandard (zstd) codec support  
+✅ **Codecs** - Bytes, transpose, Blosc, Gzip, Zstandard (zstd), and CRC32C support
 ✅ **Memory Efficient** - Chunk-level reading with streaming support  
 ✅ **Type Safe** - Strongly typed metadata models and coordinate transformations  
 ✅ **Cross-Platform** - .NET 10.0, works on Windows, Linux, macOS  
@@ -531,7 +531,7 @@ for (int y = 0; y < height; y += tileSize)
 ```
 
 ## Limitations
-- **HTTP store listing** - ListChildNamesAsync() not supported for HTTP stores. Use explicit path navigation.
+- **HTTP store listing** - `ListChildNamesAsync()` works for HTTP stores with v2 `.zmetadata` or v3 inline consolidated metadata. Stores without either still require explicit path navigation.
 - **Write support to HTTP** - Read-only for remote stores. Use LocalFileSystemStore for writing.
 - **Transform-aware image resampling** - Closed-form, rank-preserving transforms (including array-backed affine/rotation matrices) support nearest, linear, and cubic B-spline output grids. Direct vector fields use a numerical inverse solve; nested vector fields and rank-changing projections remain unsupported.
 
@@ -539,12 +539,14 @@ for (int y = 0; y < height; y += tileSize)
 
 - [x] HTTP/S3 remote store support
 - [x] Blosc codec support
+- [x] Zarr v3 transpose codec support
 - [x] AWS S3 native SDK integration (ListObjects, credentials)
 - [x] Sharded Zarr v3 support
 - [x] OME-Zarr writer API for creating new datasets
 - [x] Parallel chunk reading for improved performance
 - [x] Automated baseline tests for writer/reader round-trips and coordinate transforms
-- [ ] Zarr v2 → v3 conversion utilities
+- [x] Zarr v2 → v3 array conversion utility
+- [ ] Recursive v2 → v3 hierarchy conversion with attributes and group metadata
 - [x] OME-Zarr 0.6 coordinate systems and standard multiscale transforms
 - [x] Closed-form 0.6 point transforms: affine, rotation, axis mapping, projection, sequences, by-dimension, and bijections
 - [x] Array-backed affine and rotation parameter matrices
@@ -556,7 +558,7 @@ for (int y = 0; y < height; y += tileSize)
 - [ ] Validate and extend vector-field image resampling (nested compositions)
 - [ ] Rank-changing projection image resampling
 - [x] Scene metadata parsing and cross-image point transformation-graph traversal
-- [ ] Consolidated metadata (.zmetadata) support for HTTP stores
+- [x] Consolidated metadata (`.zmetadata` and v3 inline) support for HTTP stores
 
 ## Contributing
 
@@ -569,6 +571,18 @@ Run the suite before submitting a change:
 
 ```bash
 dotnet test ZarrNET.Tests/ZarrNET.Tests.csproj
+```
+
+### Converting a Zarr v2 array to v3
+
+`ZarrV2ToV3Converter` copies decoded chunks into a portable v3 bytes pipeline.
+It currently converts one non-root array; converting an entire hierarchy,
+including group metadata and attributes, remains future work.
+
+```csharp
+await ZarrV2ToV3Converter.ConvertArrayAsync(
+    sourceStore, "0",
+    destinationStore, "converted/0");
 ```
 3. Update documentation
 4. Open an issue first for major changes

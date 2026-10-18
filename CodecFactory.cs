@@ -30,7 +30,7 @@ public static class CodecFactory
         }
 
         var codecs = metadata.Codecs
-            .Select(info => BuildCodec(info))
+            .Select(info => BuildCodec(info, metadata, metadata.ChunkShape))
             .ToList();
 
         return new CodecPipeline(codecs, metadata.DataType.ByteOrderElementSize);
@@ -40,7 +40,7 @@ public static class CodecFactory
     // v3 codec building — from CodecInfo descriptors in zarr.json
     // -------------------------------------------------------------------------
 
-    private static IZarrCodec BuildCodec(CodecInfo info)
+    private static IZarrCodec BuildCodec(CodecInfo info, ZarrArrayMetadata metadata, int[] chunkShape)
     {
         return info.Name switch
         {
@@ -49,9 +49,19 @@ public static class CodecFactory
             "zstd"   => BuildZstdCodec(info),
             "blosc"  => BuildBloscCodecFromV3(info),
             "crc32c" => new Crc32cCodec(),
+            "transpose" => BuildTransposeCodec(info, chunkShape, metadata.DataType.ElementSize),
             _        => throw new NotSupportedException(
                            $"Unknown or unsupported codec: '{info.Name}'")
         };
+    }
+
+    private static TransposeCodec BuildTransposeCodec(CodecInfo info, int[] chunkShape, int elementSize)
+    {
+        var order = info.Configuration?.TryGetProperty("order", out var orderProp) == true
+            ? System.Text.Json.JsonSerializer.Deserialize<int[]>(orderProp.GetRawText())
+            : null;
+        return new TransposeCodec(order ?? throw new InvalidOperationException("transpose codec is missing 'order'."),
+            chunkShape, elementSize);
     }
 
     private static BytesCodec BuildBytesCodec(CodecInfo info)
@@ -145,7 +155,7 @@ public static class CodecFactory
             ? ParseCodecInfoArray(codecsProp)
             : Array.Empty<CodecInfo>();
 
-        var innerCodecs = innerCodecInfos.Select(BuildCodec).ToList();
+        var innerCodecs = innerCodecInfos.Select(info => BuildCodec(info, metadata, innerChunkShape)).ToList();
         var innerPipeline = new CodecPipeline(innerCodecs, metadata.DataType.ByteOrderElementSize);
 
         // Index codecs — the pipeline applied to the binary shard index
@@ -153,7 +163,7 @@ public static class CodecFactory
             ? ParseCodecInfoArray(indexCodecsProp)
             : Array.Empty<CodecInfo>();
 
-        var indexCodecs = indexCodecInfos.Select(BuildCodec).ToList();
+        var indexCodecs = indexCodecInfos.Select(info => BuildCodec(info, metadata, innerChunkShape)).ToList();
         // Index entries are uint64 pairs — element size is 8 bytes
         var indexPipeline = new CodecPipeline(indexCodecs, byteOrderElementSize: 8);
 
