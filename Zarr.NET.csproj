@@ -37,5 +37,8 @@
       <PackagePath>\</PackagePath>
     </None>
   </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="ZarrNET.Tests\**\*.cs" />
+  </ItemGroup>
 
 </Project>

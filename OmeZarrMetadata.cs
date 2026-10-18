@@ -120,6 +120,18 @@ public sealed class CoordinateSystemReference
     public string? Path { get; init; }
 }
 
+/// <summary>
+/// OME-Zarr 0.6 scene metadata. A scene relates coordinate systems belonging
+/// to separate multiscale image groups.
+/// </summary>
+public sealed class SceneMetadata
+{
+    public CoordinateSystemMetadata[] CoordinateSystems { get; init; }
+        = Array.Empty<CoordinateSystemMetadata>();
+    public CoordinateTransformation[] CoordinateTransformations { get; init; }
+        = Array.Empty<CoordinateTransformation>();
+}
+
 // =============================================================================
 // HCS Plate metadata
 // =============================================================================

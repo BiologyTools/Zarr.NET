@@ -7,11 +7,11 @@ namespace ZarrNET.Core.OmeZarr.Coordinates;
 /// array index space (PixelRegion) using the coordinate transformations
 /// declared in OME-Zarr metadata.
 ///
-/// OME-Zarr transform semantics:
-///   Physical = Scale * Index + Translation   (index → physical)
-///   Index    = (Physical - Translation) / Scale   (physical → index)
+/// OME-Zarr transform semantics map array index coordinates to physical
+/// coordinates. For an axis-aligned ROI, all corners are transformed and the
+/// returned pixel region is the smallest axis-aligned array-space enclosure.
 ///
-/// Two levels of transforms must be composed:
+/// Two levels of transforms are composed:
 ///   1. Per-dataset transforms (on each DatasetMetadata)
 ///   2. Top-level multiscale transforms (on MultiscaleMetadata itself)
 ///
@@ -26,6 +26,8 @@ public sealed class CoordinateTransformService
     /// <summary>
     /// Converts a physical ROI to a pixel region for a specific resolution level.
     /// The pixel region is clamped to the array bounds and snapped to whole pixels.
+    /// Rotated or sheared ROIs return an enclosing source rectangle; this method
+    /// does not resample pixels into a rotated output grid.
     /// </summary>
     public PixelRegion PhysicalToPixel(
         PhysicalROI         roi,
@@ -34,14 +36,19 @@ public sealed class CoordinateTransformService
         long[]              arrayShape)
     {
         var composedTransforms = ComposeTransforms(dataset, multiscale);
-        var (scale, translation) = FlattenToScaleTranslation(composedTransforms, roi.Rank);
+        EnsureRank(arrayShape, roi.Rank, nameof(arrayShape));
 
-        var pixelStart = PhysicalToIndex(roi.Origin, scale, translation);
-        var physicalEnd = roi.End;
-        var pixelEnd   = PhysicalToIndex(physicalEnd, scale, translation);
+        // A transformed axis-aligned physical ROI is not necessarily
+        // axis-aligned in array space (for example after a rotation). Map all
+        // corners back to index space and read the minimal enclosing box.
+        var indexCorners = EnumerateCorners(roi.Origin, roi.End)
+            .Select(corner => TransformInverse(composedTransforms, corner))
+            .ToArray();
+        EnsureRank(indexCorners, arrayShape.Length, "inverse transformation output");
 
-        var clampedStart = ClampAndFloor(pixelStart, arrayShape);
-        var clampedEnd   = ClampAndCeil(pixelEnd,   arrayShape);
+        var (minimum, maximum) = Bounds(indexCorners);
+        var clampedStart = ClampAndFloor(minimum, arrayShape);
+        var clampedEnd   = ClampAndCeil(maximum, arrayShape);
 
         EnsureMinimumRegion(clampedStart, clampedEnd, arrayShape);
 
@@ -49,23 +56,25 @@ public sealed class CoordinateTransformService
     }
 
     /// <summary>
-    /// Converts a pixel region back to a physical ROI for a specific resolution level.
-    /// Useful for reporting the actual physical extent of a read region.
+    /// Converts a pixel region back to an axis-aligned physical bounding ROI for
+    /// a specific resolution level. This is the exact extent for non-rotating
+    /// transforms and an enclosing box for rotated/sheared transforms.
     /// </summary>
     public PhysicalROI PixelToPhysical(
         PixelRegion        region,
         DatasetMetadata    dataset,
         MultiscaleMetadata multiscale)
     {
-        var composedTransforms   = ComposeTransforms(dataset, multiscale);
-        var (scale, translation) = FlattenToScaleTranslation(composedTransforms, region.Rank);
+        var composedTransforms = ComposeTransforms(dataset, multiscale);
+        var physicalCorners = EnumerateCorners(
+                region.Start.Select(value => (double)value).ToArray(),
+                region.End.Select(value => (double)value).ToArray())
+            .Select(corner => TransformForward(composedTransforms, corner))
+            .ToArray();
+        EnsureRank(physicalCorners, region.Rank, "forward transformation output");
 
-        var physicalOrigin = IndexToPhysical(region.Start.Select(v => (double)v).ToArray(), scale, translation);
-        var physicalEnd    = IndexToPhysical(region.End.Select(v => (double)v).ToArray(), scale, translation);
-
-        var physicalSize = physicalOrigin.Zip(physicalEnd, (o, e) => Math.Abs(e - o)).ToArray();
-
-        return new PhysicalROI(physicalOrigin, physicalSize);
+        var (origin, end) = Bounds(physicalCorners);
+        return new PhysicalROI(origin, origin.Zip(end, (start, finish) => finish - start).ToArray());
     }
 
     /// <summary>
@@ -75,9 +84,22 @@ public sealed class CoordinateTransformService
     /// </summary>
     public double[] GetPixelSize(DatasetMetadata dataset, MultiscaleMetadata multiscale)
     {
-        var composedTransforms   = ComposeTransforms(dataset, multiscale);
-        var (scale, _)           = FlattenToScaleTranslation(composedTransforms, multiscale.GetIntrinsicAxes().Length);
-        return scale;
+        var rank = multiscale.GetIntrinsicAxes().Length;
+        if (rank == 0) return Array.Empty<double>();
+
+        var composedTransforms = ComposeTransforms(dataset, multiscale);
+        var origin = TransformForward(composedTransforms, new double[rank]);
+        var size = new double[rank];
+        for (var axis = 0; axis < rank; axis++)
+        {
+            var adjacent = new double[rank];
+            adjacent[axis] = 1;
+            var transformed = TransformForward(composedTransforms, adjacent);
+            if (transformed.Length != origin.Length)
+                throw new NotSupportedException("Pixel size is undefined for a rank-changing transformation.");
+            size[axis] = Math.Sqrt(transformed.Zip(origin, (a, b) => (a - b) * (a - b)).Sum());
+        }
+        return size;
     }
 
     // -------------------------------------------------------------------------
@@ -103,108 +125,54 @@ public sealed class CoordinateTransformService
         return transforms;
     }
 
-    /// <summary>
-    /// Reduces an ordered list of transforms to a single (scale, translation) pair
-    /// by composing them in order. Supports "scale", "translation", and "identity".
-    /// </summary>
-    private static (double[] Scale, double[] Translation) FlattenToScaleTranslation(
+    private static double[] TransformForward(
         IReadOnlyList<CoordinateTransformation> transforms,
-        int rank)
+        IReadOnlyList<double> point)
+        => transforms.Aggregate(point.ToArray(),
+            (current, transformation) => CoordinateTransformationEvaluator.TransformForward(transformation, current));
+
+    private static double[] TransformInverse(
+        IReadOnlyList<CoordinateTransformation> transforms,
+        IReadOnlyList<double> point)
+        => transforms.Reverse().Aggregate(point.ToArray(),
+            (current, transformation) => CoordinateTransformationEvaluator.TransformInverse(transformation, current));
+
+    private static IEnumerable<double[]> EnumerateCorners(IReadOnlyList<double> start, IReadOnlyList<double> end)
     {
-        var composedScale       = Enumerable.Repeat(1.0, rank).ToArray();
-        var composedTranslation = Enumerable.Repeat(0.0, rank).ToArray();
-
-        foreach (var transform in transforms)
-        {
-            switch (transform.Type)
-            {
-                case "identity":
-                    break;
-
-                case "scale":
-                    ApplyScale(transform, composedScale, composedTranslation, rank);
-                    break;
-
-                case "translation":
-                    ApplyTranslation(transform, composedTranslation, rank);
-                    break;
-
-                case "sequence":
-                    var nested = FlattenToScaleTranslation(transform.Transformations, rank);
-                    for (int d = 0; d < rank; d++)
-                    {
-                        composedTranslation[d] = nested.Scale[d] * composedTranslation[d]
-                            + nested.Translation[d];
-                        composedScale[d] *= nested.Scale[d];
-                    }
-                    break;
-
-                default:
-                    throw new NotSupportedException(
-                        $"Coordinate transform type '{transform.Type}' is not supported. " +
-                        $"Supported types: scale, translation, identity, sequence.");
-            }
-        }
-
-        return (composedScale, composedTranslation);
+        EnsureRank(start, end.Count, "ROI end");
+        if (start.Count >= sizeof(int) * 8 - 1)
+            throw new NotSupportedException("ROI corner enumeration supports fewer than 31 dimensions.");
+        for (var mask = 0; mask < (1 << start.Count); mask++)
+            yield return Enumerable.Range(0, start.Count)
+                .Select(axis => (mask & (1 << axis)) == 0 ? start[axis] : end[axis])
+                .ToArray();
     }
 
-    private static void ApplyScale(
-        CoordinateTransformation transform,
-        double[]                 composedScale,
-        double[]                 composedTranslation,
-        int                      rank)
+    private static (double[] Minimum, double[] Maximum) Bounds(IReadOnlyList<double[]> points)
     {
-        if (transform.Scale is null)
-            throw new InvalidOperationException("Scale transform is missing 'scale' values.");
-
-        if (transform.Scale.Length != rank)
-            throw new InvalidOperationException(
-                $"Scale transform has {transform.Scale.Length} components, expected {rank}.");
-
-        for (int d = 0; d < rank; d++)
-        {
-            // Composing: new_physical = new_scale * (old_scale * index + old_translation)
-            // So overall scale multiplies, translation scales too
-            composedTranslation[d] *= transform.Scale[d];
-            composedScale[d]       *= transform.Scale[d];
-        }
+        if (points.Count == 0) throw new ArgumentException("At least one point is required.", nameof(points));
+        var rank = points[0].Length;
+        EnsureRank(points, rank, "transformation output");
+        return (Enumerable.Range(0, rank).Select(axis => points.Min(point => point[axis])).ToArray(),
+                Enumerable.Range(0, rank).Select(axis => points.Max(point => point[axis])).ToArray());
     }
 
-    private static void ApplyTranslation(
-        CoordinateTransformation transform,
-        double[]                 composedTranslation,
-        int                      rank)
+    private static void EnsureRank(IReadOnlyList<double[]> points, int expected, string name)
     {
-        if (transform.Translation is null)
-            throw new InvalidOperationException("Translation transform is missing 'translation' values.");
-
-        if (transform.Translation.Length != rank)
-            throw new InvalidOperationException(
-                $"Translation transform has {transform.Translation.Length} components, expected {rank}.");
-
-        for (int d = 0; d < rank; d++)
-            composedTranslation[d] += transform.Translation[d];
+        if (points.Any(point => point.Length != expected))
+            throw new NotSupportedException($"{name} rank does not match the array rank.");
     }
 
-    // -------------------------------------------------------------------------
-    // Index ↔ physical conversion
-    // -------------------------------------------------------------------------
-
-    private static double[] PhysicalToIndex(double[] physical, double[] scale, double[] translation)
+    private static void EnsureRank(IReadOnlyList<long> values, int expected, string name)
     {
-        var index = new double[physical.Length];
-        for (int d = 0; d < physical.Length; d++)
-            index[d] = (physical[d] - translation[d]) / scale[d];
-        return index;
+        if (values.Count != expected)
+            throw new ArgumentException($"{name} rank does not match the ROI rank.", name);
     }
 
-    private static double[] IndexToPhysical(double[] index, double[] scale, double[] translation)
+    private static void EnsureRank(IReadOnlyList<double> values, int expected, string name)
     {
-        var physical = new double[index.Length];
-        for (int d = 0; d < index.Length; d++)
-            physical[d] = scale[d] * index[d] + translation[d];
-        return physical;
+        if (values.Count != expected)
+            throw new ArgumentException($"{name} rank does not match the ROI rank.", name);
     }
 
     // -------------------------------------------------------------------------

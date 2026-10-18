@@ -242,10 +242,32 @@ double[] output = CoordinateTransformationEvaluator.TransformForward(
     resolved, [12.5, 48.0]);
 ```
 
-The existing `ReadRegionAsync(PhysicalROI)` path supports the standard
-multiscale mappings: identity, scale, translation, and sequences of those
-operations. Arbitrary affine/rotation transforms currently operate on points;
-image resampling is tracked in the roadmap below.
+`ReadRegionAsync(PhysicalROI)` returns the smallest axis-aligned source box.
+To produce an output grid through a rotated, sheared, or axis-mapped transform,
+resample into the physical region explicitly:
+
+```csharp
+var output = await level.ResamplePhysicalRegionAsync(
+    reader.RootGroup, // resolves array-backed affine/rotation matrices when present
+    new PhysicalROI(origin: [0, 0, 0, -50, -50], size: [1, 1, 1, 100, 100]),
+    outputShape: [1, 1, 1, 512, 512],
+    interpolation: ImageResamplingInterpolation.Linear);
+```
+
+This supports rank-preserving inline closed-form transforms and nearest, linear,
+or cubic B-spline image interpolation. The overload accepting `reader.RootGroup`
+resolves array-backed affine/rotation matrices and direct `coordinates` or
+`displacements` vector fields. Vector fields use a numerical inverse solve for
+pull-based resampling; nested vector-field compositions and rank-changing
+projections are not yet supported.
+
+Scene metadata can be parsed and used to map points across image groups:
+
+```csharp
+var scene = OmeAttributesParser.ParseScene(reader.RawAttributes!.Value);
+var graph = CoordinateTransformationGraph.FromScene(scene!);
+double[] inInstrument1 = graph.TransformPoint(pointInInstrument2, source, destination);
+```
 
 ## API Overview
 
@@ -511,9 +533,7 @@ for (int y = 0; y < height; y += tileSize)
 ## Limitations
 - **HTTP store listing** - ListChildNamesAsync() not supported for HTTP stores. Use explicit path navigation.
 - **Write support to HTTP** - Read-only for remote stores. Use LocalFileSystemStore for writing.
-- **Transform vector fields** - `coordinates` and `displacements` transforms require vector-field sampling and interpolation, which is not yet implemented.
-- **Transform-aware image resampling** - Affine, rotation, dimensional projection, and vector-field transforms can be evaluated for points but are not yet applied while reading/resampling image pixels.
-- **Scene transformation graphs** - Cross-image scene metadata and automatic transform-path discovery are not yet implemented.
+- **Transform-aware image resampling** - Closed-form, rank-preserving transforms (including array-backed affine/rotation matrices) support nearest, linear, and cubic B-spline output grids. Direct vector fields use a numerical inverse solve; nested vector fields and rank-changing projections remain unsupported.
 
 ## Roadmap
 
@@ -523,13 +543,19 @@ for (int y = 0; y < height; y += tileSize)
 - [x] Sharded Zarr v3 support
 - [x] OME-Zarr writer API for creating new datasets
 - [x] Parallel chunk reading for improved performance
+- [x] Automated baseline tests for writer/reader round-trips and coordinate transforms
 - [ ] Zarr v2 → v3 conversion utilities
 - [x] OME-Zarr 0.6 coordinate systems and standard multiscale transforms
 - [x] Closed-form 0.6 point transforms: affine, rotation, axis mapping, projection, sequences, by-dimension, and bijections
 - [x] Array-backed affine and rotation parameter matrices
-- [ ] Vector-field `coordinates` and `displacements` transforms with nearest/linear interpolation
-- [ ] Transformation-aware image/ROI resampling for affine, rotation, projection, and vector-field transforms
-- [ ] Scene metadata and cross-image transformation-graph traversal
+- [x] Vector-field `coordinates` and `displacements` transforms with nearest/linear interpolation
+- [x] Cubic (`bspline-cubic`) vector-field interpolation
+- [x] Transform-aware nearest/linear image resampling for rank-preserving closed-form transforms
+- [x] Array-backed affine/rotation matrix resampling
+- [x] Cubic B-spline image resampling
+- [ ] Validate and extend vector-field image resampling (nested compositions)
+- [ ] Rank-changing projection image resampling
+- [x] Scene metadata parsing and cross-image point transformation-graph traversal
 - [ ] Consolidated metadata (.zmetadata) support for HTTP stores
 
 ## Contributing
@@ -538,6 +564,12 @@ Contributions welcome! Please:
 
 1. Follow the existing code style (variable staging pattern, clear separation of concerns)
 2. Add tests for new features
+
+Run the suite before submitting a change:
+
+```bash
+dotnet test ZarrNET.Tests/ZarrNET.Tests.csproj
+```
 3. Update documentation
 4. Open an issue first for major changes
 

@@ -5,7 +5,7 @@ VisualStudioVersion = 18.2.11415.280
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Zarr.NET", "Zarr.NET.csproj", "{FD9435AE-E546-2BAD-6EB8-38123063090D}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ZarrTest", "..\ZarrTest\ZarrTest.csproj", "{2B53BF70-4909-B7A3-0904-FDAF222AEA01}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ZarrNET.Tests", "ZarrNET.Tests\ZarrNET.Tests.csproj", "{E1DFBB94-1C3D-4D39-A0A8-B8290E9D36F7}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -17,10 +17,10 @@ Global
 		{FD9435AE-E546-2BAD-6EB8-38123063090D}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{FD9435AE-E546-2BAD-6EB8-38123063090D}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{FD9435AE-E546-2BAD-6EB8-38123063090D}.Release|Any CPU.Build.0 = Release|Any CPU
-		{2B53BF70-4909-B7A3-0904-FDAF222AEA01}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{2B53BF70-4909-B7A3-0904-FDAF222AEA01}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{2B53BF70-4909-B7A3-0904-FDAF222AEA01}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{2B53BF70-4909-B7A3-0904-FDAF222AEA01}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E1DFBB94-1C3D-4D39-A0A8-B8290E9D36F7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E1DFBB94-1C3D-4D39-A0A8-B8290E9D36F7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E1DFBB94-1C3D-4D39-A0A8-B8290E9D36F7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E1DFBB94-1C3D-4D39-A0A8-B8290E9D36F7}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

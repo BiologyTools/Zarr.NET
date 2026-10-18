@@ -136,6 +136,25 @@ public static class OmeAttributesParser
                .ToArray();
     }
 
+    /// <summary>Parses optional OME-Zarr 0.6 scene metadata.</summary>
+    public static SceneMetadata? ParseScene(JsonElement attributes)
+    {
+        var resolved = ResolveOmeAttributes(attributes);
+        if (!resolved.TryGetProperty("scene", out var sceneEl))
+            return null;
+
+        var scene = JsonSerializer.Deserialize<SceneMetadataJson>(sceneEl.GetRawText(), _options)
+            ?? throw new InvalidOperationException("Failed to deserialize scene metadata.");
+        return new SceneMetadata
+        {
+            CoordinateSystems = scene.CoordinateSystems?.Select(ToCoordinateSystemMetadata).ToArray()
+                ?? Array.Empty<CoordinateSystemMetadata>(),
+            CoordinateTransformations = scene.CoordinateTransformations?
+                .Select(ToCoordinateTransformation).ToArray()
+                ?? Array.Empty<CoordinateTransformation>()
+        };
+    }
+
     public static PlateMetadata ParsePlate(JsonElement attributes)
     {
         var resolved = ResolveOmeAttributes(attributes);
@@ -391,6 +410,14 @@ public static class OmeAttributesParser
     {
         [JsonPropertyName("name")] public string? Name { get; init; }
         [JsonPropertyName("axes")] public AxisMetadataJson[]? Axes { get; init; }
+    }
+
+    private sealed class SceneMetadataJson
+    {
+        [JsonPropertyName("coordinateSystems")]
+        public CoordinateSystemMetadataJson[]? CoordinateSystems { get; init; }
+        [JsonPropertyName("coordinateTransformations")]
+        public CoordinateTransformationJson[]? CoordinateTransformations { get; init; }
     }
 
     /// <summary>
