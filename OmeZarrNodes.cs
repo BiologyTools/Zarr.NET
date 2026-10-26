@@ -29,6 +29,90 @@ public abstract class OmeZarrNode
 }
 
 // =============================================================================
+// Scene node
+// =============================================================================
+
+/// <summary>
+/// Represents an OME-Zarr 0.6 scene that relates coordinate systems from one
+/// or more child multiscale images.
+/// </summary>
+public sealed class SceneNode : OmeZarrNode
+{
+    public SceneMetadata SceneMetadata { get; }
+
+    /// <summary>
+    /// Distinct child image paths referenced by scene transformations, in
+    /// first-use order (input before output).
+    /// </summary>
+    public IReadOnlyList<string> ImagePaths { get; }
+
+    internal SceneNode(ZarrGroup group, SceneMetadata sceneMetadata)
+        : base(group, OmeAttributesParser.OmeNodeType.Scene)
+    {
+        SceneMetadata = sceneMetadata;
+        var paths = new List<string>();
+        foreach (var transformation in sceneMetadata.CoordinateTransformations)
+            CollectImagePaths(transformation, paths);
+        ImagePaths = paths;
+    }
+
+    /// <summary>Opens a referenced child image as a multiscale node.</summary>
+    public async Task<MultiscaleNode> OpenImageAsync(
+        int imageIndex = 0,
+        CancellationToken ct = default)
+    {
+        if ((uint)imageIndex >= (uint)ImagePaths.Count)
+            throw new ArgumentOutOfRangeException(nameof(imageIndex));
+
+        var path = ImagePaths[imageIndex];
+        var imageGroup = await Group.OpenGroupAsync(path, ct).ConfigureAwait(false);
+        var attributes = imageGroup.Metadata.RawAttributes
+            ?? throw new InvalidOperationException($"Scene image group '{path}' has no attributes.");
+
+        if (OmeAttributesParser.DetectNodeType(attributes) !=
+            OmeAttributesParser.OmeNodeType.MultiscaleImage)
+        {
+            throw new InvalidOperationException(
+                $"Scene reference '{path}' does not point to a multiscale image.");
+        }
+
+        return new MultiscaleNode(imageGroup, OmeAttributesParser.ParseMultiscales(attributes));
+    }
+
+    private static void CollectImagePaths(
+        CoordinateTransformation transformation,
+        List<string> paths)
+    {
+        AddPath(transformation.Input?.Path, paths);
+        AddPath(transformation.Output?.Path, paths);
+
+        foreach (var nested in transformation.Transformations)
+            CollectImagePaths(nested, paths);
+
+        if (transformation.Forward is not null)
+            CollectImagePaths(transformation.Forward, paths);
+        if (transformation.Inverse is not null)
+            CollectImagePaths(transformation.Inverse, paths);
+    }
+
+    private static void AddPath(string? path, List<string> paths)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        var normalized = path.Replace('\\', '/').Trim('/');
+        if (normalized.StartsWith("../", StringComparison.Ordinal))
+            normalized = normalized[3..];
+
+        if (!string.IsNullOrEmpty(normalized) &&
+            !paths.Contains(normalized, StringComparer.Ordinal))
+        {
+            paths.Add(normalized);
+        }
+    }
+}
+
+// =============================================================================
 // Multiscale image node
 // =============================================================================
 

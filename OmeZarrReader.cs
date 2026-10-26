@@ -235,6 +235,18 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
         return new MultiscaleNode(_rootGroup, multiscales);
     }
 
+    /// <summary>Returns the root as an OME-Zarr 0.6 scene.</summary>
+    public SceneNode AsScene()
+    {
+        EnsureNodeType(OmeAttributesParser.OmeNodeType.Scene, nameof(AsScene));
+
+        var attributes = RequireAttributes();
+        var scene = OmeAttributesParser.ParseScene(attributes)
+            ?? throw new InvalidOperationException("Attributes do not contain scene metadata.");
+
+        return new SceneNode(_rootGroup, scene);
+    }
+
     /// <summary>
     /// Returns the root as a PlateNode.
     /// Throws if the root is not an HCS plate.
@@ -304,6 +316,18 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
             return await collection.OpenSeriesAsync(0, ct).ConfigureAwait(false);
         }
 
+        // OME-Zarr 0.6 scenes reference one or more child multiscale images.
+        // Preserve the convenient single-image API by opening the first image
+        // referenced by the scene (normally the transformation input).
+        if (RootNodeType == OmeAttributesParser.OmeNodeType.Scene)
+        {
+            var scene = AsScene();
+            if (scene.ImagePaths.Count == 0)
+                throw new InvalidOperationException(
+                    "OME-Zarr scene does not reference any child images.");
+            return await scene.OpenImageAsync(0, ct).ConfigureAwait(false);
+        }
+
         // Everything else is a type mismatch — EnsureNodeType will throw
         EnsureNodeType(OmeAttributesParser.OmeNodeType.MultiscaleImage,
             nameof(AsMultiscaleImageAsync));
@@ -322,6 +346,12 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
 
         return RootNodeType switch
         {
+            OmeAttributesParser.OmeNodeType.Scene =>
+                new SceneNode(
+                    _rootGroup,
+                    OmeAttributesParser.ParseScene(attributes!.Value)
+                        ?? throw new InvalidOperationException("Attributes do not contain scene metadata.")),
+
             OmeAttributesParser.OmeNodeType.Plate =>
                 new PlateNode(_rootGroup, OmeAttributesParser.ParsePlate(attributes!.Value)),
 
@@ -344,7 +374,7 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
             _ => throw new InvalidOperationException(
                 $"Cannot determine OME-Zarr node type. " +
                 $"Root attributes do not contain a recognised OME-Zarr key " +
-                $"(multiscales, plate, well, labels, bioformats2raw.layout). " +
+                $"(scene, multiscales, plate, well, labels, bioformats2raw.layout). " +
                 $"Path: {_rootGroup.GroupPath}")
         };
     }
@@ -424,7 +454,7 @@ public sealed class OmeZarrReader : IAsyncDisposable, IDisposable
                 $"Root attributes: {attributesHint}. " +
                 (RootNodeType == OmeAttributesParser.OmeNodeType.Unknown
                     ? "The root group attributes do not contain any recognised OME-Zarr key " +
-                      "(multiscales, plate, well, labels, bioformats2raw.layout) — check whether " +
+                      "(scene, multiscales, plate, well, labels, bioformats2raw.layout) — check whether " +
                       "this is an unsupported metadata format."
                     : RootNodeType == OmeAttributesParser.OmeNodeType.Bioformats2RawCollection
                     ? "This is a bioformats2raw.layout wrapper. Use AsBioformats2RawCollection() " +

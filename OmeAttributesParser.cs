@@ -34,6 +34,7 @@ public static class OmeAttributesParser
     public enum OmeNodeType
     {
         Unknown,
+        Scene,
         MultiscaleImage,
         Plate,
         Well,
@@ -63,6 +64,9 @@ public static class OmeAttributesParser
 
         if (attrs.TryGetProperty("labels", out _))
             return OmeNodeType.LabelGroup;
+
+        if (attrs.TryGetProperty("scene", out _))
+            return OmeNodeType.Scene;
 
         if (attrs.TryGetProperty("multiscales", out _))
         {
@@ -323,10 +327,14 @@ public static class OmeAttributesParser
             CreatedOutputs = json.CreatedOutputs,
             DroppedInputs  = json.DroppedInputs,
             Interpolation  = json.Interpolation,
-            Transformations = json.Transformations?.Select(ToCoordinateTransformation).ToArray()
-                ?? Array.Empty<CoordinateTransformation>(),
-            ByDimensionTransformations = json.Transformations?.Select(ToByDimensionTransformation).ToArray()
-                ?? Array.Empty<ByDimensionTransformation>(),
+            Transformations = !string.Equals(json.Type, "byDimension", StringComparison.OrdinalIgnoreCase)
+                ? json.Transformations?.Select(ToCoordinateTransformation).ToArray()
+                    ?? Array.Empty<CoordinateTransformation>()
+                : Array.Empty<CoordinateTransformation>(),
+            ByDimensionTransformations = string.Equals(json.Type, "byDimension", StringComparison.OrdinalIgnoreCase)
+                ? json.Transformations?.Select(ToByDimensionTransformation).ToArray()
+                    ?? Array.Empty<ByDimensionTransformation>()
+                : Array.Empty<ByDimensionTransformation>(),
             Forward = json.Forward is null ? null : ToCoordinateTransformation(json.Forward),
             Inverse = json.Inverse is null ? null : ToCoordinateTransformation(json.Inverse)
         };
