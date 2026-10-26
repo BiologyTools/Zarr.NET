@@ -212,10 +212,14 @@ public sealed class BloscCodec : IZarrCodec
 
             var outputOffset = blockIdx * header.BlockSize;
 
-            var nextBstart = isLastBlock
-                ? frame.Length
-                : BinaryPrimitives.ReadInt32LittleEndian(
-                    frame.AsSpan(bstartsBase + (blockIdx + 1) * 4, 4));
+            // Parallel compression can write blocks in a different order from their indices.
+            int nextBstart = frame.Length;
+            for (int i = 0; i < nblocks; i++)
+            {
+                int candidate = BinaryPrimitives.ReadInt32LittleEndian(frame.AsSpan(bstartsBase + i * 4, 4));
+                if (candidate > bstart && candidate < nextBstart)
+                    nextBstart = candidate;
+            }
 
             DecompressBlockSplits(
                 frame, header, bstart, nextBstart, nSplits, uncompressedBlockSize,
