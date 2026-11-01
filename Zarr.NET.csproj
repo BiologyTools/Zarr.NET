@@ -12,14 +12,14 @@
 	<PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
 	<PackageProjectUrl>https://biologytools.github.io/</PackageProjectUrl>
 	<PackageTags>Biology; Microscopy; Whole-Slide-Image; Zarr; OME-Zarr; NGFF;</PackageTags>
-	<PackageReleaseNotes>OME-Zarr coordinate, support for Zarr transformations like translation. Also region write handling and performance increases.</PackageReleaseNotes>
+	<PackageReleaseNotes>Adds Blosc bit-shuffle decoding for single-byte and multi-byte elements, improving compatibility with existing Zarr datasets. Includes regression coverage for LZ4-compressed byte and UInt16 data. Bit-shuffle encoding remains unsupported; decoding requires blocks containing a multiple of eight elements.</PackageReleaseNotes>
 	<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 	<Authors>Erik Repo</Authors>
 	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-	<Version>0.8.1</Version>
-	<AssemblyVersion>0.8.1.0</AssemblyVersion>
-	<FileVersion>0.8.1.0</FileVersion>
-	<PackageVersion>0.8.1</PackageVersion>
+	<Version>0.8.2</Version>
+	<AssemblyVersion>0.8.2.0</AssemblyVersion>
+	<FileVersion>0.8.2.0</FileVersion>
+	<PackageVersion>0.8.2</PackageVersion>
 	<PackageReadmeFile>README.md</PackageReadmeFile>
 	<PackageIcon>icon.png</PackageIcon>
   </PropertyGroup>
