@@ -21,7 +21,7 @@ namespace ZarrNET;
 /// Shuffle is applied per-block before compression, so unshuffle must also be per-block.
 ///
 /// Supported inner codecs: lz4, lz4hc, zstd, zlib
-/// Unsupported (throws NotSupportedException): blosclz, snappy, bit-shuffle, split blocks
+/// Unsupported (throws NotSupportedException): blosclz, snappy
 ///
 /// NuGet dependencies:
 ///   K4os.Compression.LZ4  (lz4 / lz4hc inner codec)
@@ -130,11 +130,6 @@ public sealed class BloscCodec : IZarrCodec
         var blockCount = blockSize > 0
             ? (uncompressedBytes + blockSize - 1) / blockSize
             : 0;
-
-        if (shuffle == BloscShuffle.BitShuffle)
-            throw new NotSupportedException(
-                "Blosc bit-shuffle is not yet supported. " +
-                "Re-save with byte-shuffle (shuffle=1) or no shuffle (shuffle=0).");
 
         if (internalId == BloscInternalCodec.BloscLZ)
             throw new NotSupportedException(
@@ -434,7 +429,16 @@ public sealed class BloscCodec : IZarrCodec
     /// </summary>
     private static void ApplyUnshuffle(Span<byte> data, int typesize, BloscShuffle shuffle)
     {
-        if (shuffle == BloscShuffle.None || typesize <= 1 || data.Length % typesize != 0)
+        if (shuffle == BloscShuffle.None || data.Length % typesize != 0)
+            return;
+
+        if (shuffle == BloscShuffle.BitShuffle)
+        {
+            ApplyBitUnshuffle(data, typesize);
+            return;
+        }
+
+        if (typesize <= 1)
             return;
 
         var temp      = new byte[data.Length];
@@ -449,6 +453,66 @@ public sealed class BloscCodec : IZarrCodec
         }
 
         temp.AsSpan().CopyTo(data);
+    }
+
+    /// <summary>
+    /// Reverses Blosc/Bitshuffle's scalar bit transpose. Bitshuffle stores one row
+    /// for every bit of every byte in an element. Each byte in a row contains that
+    /// bit for eight consecutive elements.
+    /// </summary>
+    private static void ApplyBitUnshuffle(Span<byte> data, int typesize)
+    {
+        var elementCount = data.Length / typesize;
+        if (elementCount % 8 != 0)
+            throw new InvalidDataException(
+                $"A bit-shuffled Blosc block must contain a multiple of 8 elements; " +
+                $"got {elementCount} elements of {typesize} bytes.");
+
+        var bytesPerBitRow = elementCount / 8;
+        var groupedBits = new byte[data.Length];
+
+        // Convert the bit-row layout into groups containing eight bit-plane bytes
+        // for each byte position within an element.
+        for (int bytePos = 0; bytePos < typesize; bytePos++)
+        {
+            for (int group = 0; group < bytesPerBitRow; group++)
+            {
+                for (int bit = 0; bit < 8; bit++)
+                {
+                    groupedBits[group * 8 * typesize + bytePos * 8 + bit] =
+                        data[(bytePos * 8 + bit) * bytesPerBitRow + group];
+                }
+            }
+        }
+
+        var output = new byte[data.Length];
+        for (int groupOffset = 0; groupOffset < data.Length; groupOffset += 8 * typesize)
+        {
+            for (int bytePos = 0; bytePos < typesize; bytePos++)
+            {
+                var bits = BinaryPrimitives.ReadUInt64LittleEndian(
+                    groupedBits.AsSpan(groupOffset + bytePos * 8, 8));
+                bits = TransposeBits8x8(bits);
+
+                for (int element = 0; element < 8; element++)
+                {
+                    output[groupOffset + element * typesize + bytePos] = (byte)bits;
+                    bits >>= 8;
+                }
+            }
+        }
+
+        output.AsSpan().CopyTo(data);
+    }
+
+    private static ulong TransposeBits8x8(ulong value)
+    {
+        var temp = (value ^ (value >> 7)) & 0x00AA00AA00AA00AAUL;
+        value ^= temp ^ (temp << 7);
+        temp = (value ^ (value >> 14)) & 0x0000CCCC0000CCCCUL;
+        value ^= temp ^ (temp << 14);
+        temp = (value ^ (value >> 28)) & 0x00000000F0F0F0F0UL;
+        return value ^ temp ^ (temp << 28);
     }
 
     // -------------------------------------------------------------------------
