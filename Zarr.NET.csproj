@@ -11,6 +11,7 @@
 	<PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
 	<PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
 	<PackageProjectUrl>https://biologytools.github.io/</PackageProjectUrl>
+	<RepositoryUrl>https://github.com/BiologyTools/ZarrNET</RepositoryUrl>
 	<PackageTags>Biology; Microscopy; Whole-Slide-Image; Zarr; OME-Zarr; NGFF;</PackageTags>
 	<PackageReleaseNotes>Adds Blosc bit-shuffle decoding for single-byte and multi-byte elements, improving compatibility with existing Zarr datasets. Includes regression coverage for LZ4-compressed byte and UInt16 data. Bit-shuffle encoding remains unsupported; decoding requires blocks containing a multiple of eight elements.</PackageReleaseNotes>
 	<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
